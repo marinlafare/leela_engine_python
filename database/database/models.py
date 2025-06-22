@@ -10,7 +10,10 @@ Base = declarative_base()
 
 def to_dict(obj: Base) -> dict[str, Any]:
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
-
+    
+class Rawfen(Base):
+    __tablename__ = "rawfen"
+    fen = Column(String, primary_key = True)
 class Fen(Base):
     __tablename__ = "fen"
     fen = Column(String, primary_key=True)
@@ -19,6 +22,9 @@ class Fen(Base):
     time = Column(Float, nullable = False)
     nodes = Column(Integer, nullable = False)
     score = Column(Float, nullable = False)
-    tbhits = Column(String, nullable = False)
-    node_per_second = Column(Integer, nullable = False)
+    tbhits = Column(Integer, nullable = False)
+    nps = Column(Integer, nullable = False)
     
+class Game(Base):
+    __tablename__ = "leela_scored"
+    link = Column(BigInteger,primary_key = True, unique = True)

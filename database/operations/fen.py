@@ -1,28 +1,17 @@
 # OPERATIONS
-import chess
-import chess.engine
-
-from database.database.leela_engine import *
-
 import os
 import chess
 import chess.engine
 import asyncio
-
-# --- Configuration (Ensure these paths are correct for your WSL environment) ---
-LC0_PATH = ["/home/jon/workshop/leela_zero/leela_engine_python/Lc0/lc0.exe"]
-lc0_directory = os.path.dirname(LC0_PATH[0])
-LC0_WEIGHTS_FILE = "791556.pb.gz"
-# --- End Configuration ---
-
-
+from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
+from database.operations.models import FenCreateData
+from database.database.db_interface import DBInterface
+from database.database.models import Fen, Game
 async def initialize_lc0_engine() -> chess.engine.UciProtocol:
     """
-    Launches and configures the Leela Chess Zero (Lc0) engine once.
-
+    Launches and configures the Leela Chess Zero (Lc0) engine.
     Returns:
         An initialized Lc0 engine instance (chess.engine.UciProtocol).
-
     Raises:
         Exception: If the engine fails to launch or configure.
     """
@@ -30,126 +19,82 @@ async def initialize_lc0_engine() -> chess.engine.UciProtocol:
     try:
         print("Launching Lc0 engine...")
         transport, engine_uci = await chess.engine.popen_uci(
-            LC0_PATH, 
+            LC0_PATH,
             cwd=lc0_directory
         )
-        
+
+        weights = os.path.join(lc0_directory, LC0_WEIGHTS_FILE)
         await engine_uci.configure({
-            "WeightsFile": LC0_WEIGHTS_FILE,
+            "WeightsFile": weights,
             "Backend": "cuda-fp16",
             "Threads": 1,
             "MinibatchSize": 1024
         })
-        print("Lc0 engine successfully launched and configured.")
+
         return engine_uci
     except Exception as e:
         print(f"Error initializing Lc0 engine: {e}")
         if engine_uci:
-            await engine_uci.quit() # Ensure clean shutdown even on init failure
-        raise # Re-raise the exception to propagate the error
+            await engine_uci.quit()
+        raise
 
-
-async def analyze_single_position(engine_uci: chess.engine.UciProtocol, fen: str, nodes_limit: int = 50000) -> dict:
+async def analyze_single_position(engine_uci: chess.engine.UciProtocol,
+                                  fen: str, nodes_limit: int = 50000) -> dict:
     """
-    Analyzes a single chess position using an already initialized Leela Chess Zero (Lc0) engine
-    and returns its centipawn score and principal variation.
-
+    Analyzes a fen with Leela.
+    
     Args:
-        engine_uci: An already initialized Lc0 engine instance.
-        fen: The FEN string of the position to analyze.
-        nodes_limit: The maximum number of nodes Lc0 should explore (playouts).
+        engine_uci: Leela engine instance.
+        fen: a self explanatory fen.
+        nodes_limit: The maximum number of nodes Lc0 should explore, default:50_000.
 
     Returns:
-        A dictionary containing the FEN, centipawn score, and principal variation (PV).
-        Includes an 'error' key if analysis fails.
+        A dictionary containing score in centipawns and principal variation and stuff.
     """
     board = chess.Board(fen)
 
+    # "2 validation errors for FenCreateData\nfen\n  Field required [type=missing, input_value={'depth': 12, 'seldepth':...'d7d5', 'f3e5', 'd5e4']}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.10/v/missing\nnode_per_second\n  Field required [type=missing, input_value={'depth': 12, 'seldepth':...'d7d5', 'f3e5', 'd5e4']}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.10/v/missing"
+
     try:
         limit = chess.engine.Limit(nodes=nodes_limit)
-        info = await engine_uci.analyse(board, limit=limit) # This line *must* be awaited
-        
-        score = info["score"].white().score(mate_score=10000) 
+        info = await engine_uci.analyse(board, limit=limit)
+        score = info["score"].white().score(mate_score=10000) / 100
         pv = [move.uci() for move in info["pv"]]
-
-        return {"fen": fen, "score": score, "pv": pv}
+        info['fen'] = fen
+        info['score'] = score
+        info['pv'] = ''.join([move+'##' for move in pv])
+        print(info)
+        fen_interface = DBInterface(Fen)
+        fen_data = FenCreateData(**info)
+        fen_interface.create(fen_data.model_dump())
+        
+        return info
 
     except Exception as e:
         print(f"An error occurred during Lc0 analysis for FEN {fen}: {e}")
         return {"fen": fen, "error": str(e)}
 
 
-# THIS IS THE PRIMARY FUNCTION THAT NEEDS TO BE CORRECTED IN YOUR OPERATIONS FILE
 async def analize_fen(fen: str) -> dict:
     """
-    Analyzes a single FEN position using the Lc0 engine.
-    This function is asynchronous and manages the engine's lifecycle for a single request.
-
+    Initializes a Leela engine instance.
+    Asks the engine for the analysis of the fen.
+    
     Args:
-        fen: The FEN string of the chess position.
-
+        fen: a string in a fen format.
     Returns:
-        A dictionary containing the FEN, centipawn score, and principal variation (PV).
-        Includes an 'error' key if analysis fails.
+        A dictionary containing the fen as key and the stuff as values.
     """
-    engine = None # Initialize engine to None
+    engine = None
     try:
-        # VERY IMPORTANT: AWAIT the engine initialization!
         engine = await initialize_lc0_engine() 
-        
-        # VERY IMPORTANT: AWAIT the single position analysis!
         analysis_result = await analyze_single_position(engine, fen, nodes_limit=50000)
-        
         return analysis_result
     except Exception as e:
         print(f"Error in analize_fen for FEN {fen}: {e}")
-        # Return an error dictionary, which is JSON serializable
         return {"fen": fen, "error": f"Analysis failed: {e}"}
     finally:
-        # Always quit the engine when done or if an error occurs
         if engine:
             print(f"Quitting Lc0 engine for FEN {fen}...")
             await engine.quit()
             print(f"Lc0 engine quit for FEN {fen}.")
-
-
-
-
-
-
-
-
-
-# def analize_one_fen(engine, fen, nodes_limit=50000):
-#     result = {}
-#     board = chess.Board(fen)
-#     limit = chess.engine.Limit(nodes=nodes_limit)
-#     info = engine.analyse(board, limit=limit)
-#     result[fen] = info
-#     result[fen]['score'] = info["score"].white().score(mate_score=10000) / 100
-#     result[fen]['pv'] = [move.uci() for move in result[fen]['pv']]
-#     return result
-
-
-# async def analize_fen(fen: str) -> dict:
-#     """
-#     Analyzes a single FEN position using the Lc0 engine.
-#     This function *must* be asynchronous and handle engine lifecycle.
-#     """
-#     engine = None # Initialize engine to None
-#     try:
-#         # Crucially, AWAIT the engine initialization!
-#         engine = await initialize_lc0_engine() 
-        
-#         # Then, AWAIT the single position analysis using the obtained engine object
-#         analysis_result = await analize_one_fen(engine, fen, nodes_limit=50000)
-        
-#         return analysis_result
-#     except Exception as e:
-#         print(f"Error in analize_fen for FEN {fen}: {e}")
-#         return {"fen": fen, "error": f"Analysis failed: {e}"}
-#     finally:
-#         # Always quit the engine when done or if an error occurs
-#         if engine:
-#             await engine.quit()
-
