@@ -1,7 +1,7 @@
 import asyncio
 import websockets
 import json
-
+import time
 async def test_websocket_client(n_games):
     uri = f"ws://127.0.0.1:8001/ws/collect_fens/{n_games}"
     try:
@@ -11,9 +11,10 @@ async def test_websocket_client(n_games):
                 try:
                     message = await websocket.recv()
                     print(f"Received: {message}")
-                    response = input('Say something for xs sake...: ')
-                    await websocket.send(response)
-
+                    if "GAME LINKS INSERTED: " in message:
+                        time.sleep(2)
+                        break
+                        
                 except websockets.exceptions.ConnectionClosedOK:
                     print("Connection closed normally.")
                     break
@@ -28,4 +29,4 @@ async def test_websocket_client(n_games):
         print(f"Could not connect: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(test_websocket_client(n_games=10)) # Adjust n_games as needed
+    asyncio.run(test_websocket_client(n_games=200)) # Adjust n_games as needed

@@ -6,7 +6,7 @@ import asyncio
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 from database.operations.models import FenCreateData
 from database.database.db_interface import DBInterface
-from database.database.models import Fen, Game
+from database.database.models import Fen, Knownfens
 async def initialize_lc0_engine() -> chess.engine.UciProtocol:
     """
     Launches and configures the Leela Chess Zero (Lc0) engine.

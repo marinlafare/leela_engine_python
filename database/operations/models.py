@@ -13,7 +13,7 @@ class FenCreateData(BaseModel):
     tbhits: int
     nps: int
 
-class GameCreateData(BaseModel):
+class KnownfensCreateData(BaseModel):
     link: int
 class RawfenCreateData(BaseModel):
     fen:str

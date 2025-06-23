@@ -25,6 +25,6 @@ class Fen(Base):
     tbhits = Column(Integer, nullable = False)
     nps = Column(Integer, nullable = False)
     
-class Game(Base):
-    __tablename__ = "leela_scored"
+class Knownfens(Base):
+    __tablename__ = "knownfens"
     link = Column(BigInteger,primary_key = True, unique = True)
