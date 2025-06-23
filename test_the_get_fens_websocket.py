@@ -11,7 +11,8 @@ async def test_websocket_client(n_games):
                 try:
                     message = await websocket.recv()
                     print(f"Received: {message}")
-                    if "GAME LINKS INSERTED: " in message:
+                    if "BYEEEE" in message:
+                        print('EVERYTHING IS DONE NOW')
                         time.sleep(2)
                         break
                         

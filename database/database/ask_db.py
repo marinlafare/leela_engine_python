@@ -62,7 +62,7 @@ def get_all_tables():
         tables = curs.fetchall()
     return tables
 def delete_all_leela_tables():
-    for table_row in ['fen','known_fens','rawfen']:
+    for table_row in ['fen','known_fens','rawfen','knownfens','fens_ready']:
             conn = get_ask_connection()
             conn.autocommit = True
             table_name = table_row
