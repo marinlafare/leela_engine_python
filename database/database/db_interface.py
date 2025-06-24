@@ -47,7 +47,7 @@ class DBInterface:
         Inserts multiple records using bulk_insert_mappings.
         """
         if not data:
-            return 'No DATA, are you joking? it's not funny'
+            return "No DATA, are you joking? it's not funny"
         session: Session = DBSession()
         try:
             session.bulk_insert_mappings(self.db_class, data)
