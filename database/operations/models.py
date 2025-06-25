@@ -1,8 +1,6 @@
-# OPERATIONS
+# OPERATIONS_MODELS
 
 from pydantic import BaseModel
-
-
 class FenCreateData(BaseModel):
     fen: str
     depth: int
@@ -12,8 +10,7 @@ class FenCreateData(BaseModel):
     score: float
     tbhits: int
     nps: int
-
-class KnownfensCreateData(BaseModel):
-    link: int
-class RawfenCreateData(BaseModel):
-    fen:str
+class MainFenCreateData(BaseModel):
+    fen: int
+    n_games: int
+    moves_counter: str

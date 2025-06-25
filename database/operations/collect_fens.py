@@ -1,4 +1,4 @@
-#OPERATIONS
+#OPERATIONS_COLLECT_FENS
 import time
 import chess
 from collections import defaultdict
@@ -158,31 +158,6 @@ def get_fens_from_games_optimized(new_game_links_data: list[tuple]) -> list[str]
     
     return list(all_fens) # Convert the set back to a list for the final output
 
-# # --- Function to get new FENs (from your original code, remains unchanged) ---
-# def get_new_fens(posible_fens: list[str]) -> list[str]:
-#     """
-#     Compares a list of possible FENs against known FENs in the 'rawfen' table
-#     and returns only the FENs that are not already present.
-
-#     Args:
-#         posible_fens (list[str]): A list of FEN strings to check.
-
-#     Returns:
-#         list[str]: A list of FEN strings that are new (not in 'rawfen').
-#     """
-#     if not posible_fens:
-#         return []
-
-#     sql_query = """
-#     SELECT p_fen.f
-#     FROM UNNEST(%s::text[]) AS p_fen(f)
-#     WHERE p_fen.f NOT IN (SELECT fen FROM rawfen);
-#     """
-#     # open_request is assumed to handle the query and return results.
-#     result_tuples = open_request(sql_query, params=(posible_fens,))
-#     valid_fens = list(chain.from_iterable(result_tuples))
-#     return valid_fens
-# --- Function to get new FENs (REVISED) ---
 def get_new_fens(posible_fens: list[str]) -> list[str]:
     """
     Compares a list of possible FENs against known FENs in the 'rawfen' table
@@ -259,46 +234,4 @@ async def collect_fens_operations(n_games):
     insert_games(new_game_links)
     print('insert_games time elapsed: ', time.time() - start_insert_games)
     return f"{len(new_fens)} NEW FENS from {len(new_game_links)} NEW GAMES"
-
-
-
-# --- Execution Flow ---
-# WEBSOCKET
-# async def collect_fens(websocket, n_games):
-#     connection = Connection()
-#     await connection.connect(websocket)
-    
-#     await connection.send_personal_message('Fetching new game links...', websocket)
-#     new_game_links = get_new_games_links(n_games) 
-#     await connection.send_personal_message(f"Retrieved {len(new_game_links)} new game links.", websocket)
-#     await connection.send_personal_message(f"Extracting every FEN from games moves.", websocket)    
-#     start_total_fen_gen = time.time()
-#     fen_set_from_games = get_fens_from_games_optimized(new_game_links)
-#     await connection.send_personal_message(f"{len(fen_set_from_games)} FENS extracted.", websocket)
-#     await connection.send_personal_message('Total time for fen_set_from_games (optimized): '+ str(time.time() - start_total_fen_gen), websocket)
-#     await connection.send_personal_message(f"Generated {len(fen_set_from_games)} unique FENs.", websocket)
-#     await connection.send_personal_message("Getting just new FENS....", websocket)    
-#     start_new_fens_check = time.time()
-#     new_fens = get_new_fens(fen_set_from_games)
-#     await connection.send_personal_message(f"Generated {len(new_fens)} unique FENs.", websocket)
-#     await connection.send_personal_message('Time for get_new_fens: ' + str(time.time() - start_new_fens_check), websocket)
-    
-    
-#     # --- Inserting FENs and Games into the Database ---
-#     print("\n--- Inserting data into the database ---")
-#     start_insert_fens = time.time()
-#     insert_fens(new_fens)
-#     print('insert_fens time elapsed: ', time.time() - start_insert_fens)
-    
-#     start_insert_games = time.time()
-#     insert_games(new_game_links)
-#     print('insert_games time elapsed: ', time.time() - start_insert_games)
-#     await connection.send_personal_message('EVERYTHING DONE YO! BYEEEE', websocket)
-#     return "CONNECTION CLOSED"
-
-
-
-
-
-
 

@@ -1,4 +1,4 @@
-#DATABASE
+#DATABASE_MODELS
 
 from typing import Any
 from sqlalchemy import Column, ForeignKey, Integer, String, Float, BigInteger
@@ -10,10 +10,13 @@ Base = declarative_base()
 
 def to_dict(obj: Base) -> dict[str, Any]:
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
-    
-class Rawfen(Base):
-    __tablename__ = "rawfen"
+
+class MainFen(Base):
+    __tablename__ = "main_fen"
     fen = Column(String, primary_key = True)
+    n_games = Column(BigInteger, nullable = False)
+    moves_counter = Column(String, nullable = False)
+    
 class Fen(Base):
     __tablename__ = "fen"
     fen = Column(String, primary_key=True)
@@ -25,6 +28,3 @@ class Fen(Base):
     tbhits = Column(Integer, nullable = False)
     nps = Column(Integer, nullable = False)
     
-class Knownfens(Base):
-    __tablename__ = "knownfens"
-    link = Column(BigInteger,primary_key = True, unique = True)
