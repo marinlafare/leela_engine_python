@@ -151,3 +151,27 @@ async def get_unanalyzed_fens(limit: int) -> List[str]:
     result_tuples = await open_async_request(sql_query, params={"limit": limit})
     # The result will be a list of tuples, e.g., [('fen1',), ('fen2',)]
     return [t[0] for t in result_tuples]
+async def get_game_links_by_username(username: str, limit: int = 100) -> List[int]: # Added limit parameter
+    """
+    Fetches game links from the 'game' table for a given username,
+    excluding those already marked as processed in 'processed_game_links',
+    up to a specified limit.
+
+    Args:
+        username (str): The username to search for.
+        limit (int): The maximum number of game links to fetch.
+
+    Returns:
+        List[int]: A list of new, unprocessed game links (integers) for the user.
+    """
+    sql_query = """
+    SELECT g.link
+    FROM game AS g
+    LEFT JOIN processed_game AS pgl ON g.link = pgl.link
+    WHERE (g.white = :username OR g.black = :username) AND pgl.link IS NULL
+    LIMIT :limit; -- Added LIMIT clause
+    """
+    # Use open_async_request and await it. Fetch values directly as links.
+    result_tuples = await open_async_request(sql_query, params={"username": username, "limit": limit})
+    # Extract just the link (which is the first and only element in each tuple)
+    return [link[0] for link in result_tuples]

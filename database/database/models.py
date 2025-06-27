@@ -16,7 +16,7 @@ class MainFen(Base):
     fen = Column(String, primary_key = True)
     n_games = Column(BigInteger, nullable = False)
     moves_counter = Column(String, nullable = False)
-    
+    in_games = Column(String,nullable = False)
 class Fen(Base):
     __tablename__ = "fen"
     fen = Column(String, primary_key=True)

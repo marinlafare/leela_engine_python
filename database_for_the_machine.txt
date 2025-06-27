@@ -1,0 +1,1109 @@
+# LEELA MAIN (main.py)
+import os
+from dotenv import load_dotenv
+from fastapi import FastAPI, WebSocket
+from contextlib import asynccontextmanager
+from constants import CONN_STRING
+
+# Import the new asynchronous init_db and AsyncDBSession
+from database.database.engine import init_db, AsyncDBSession
+
+# Import your routers
+from database.routers import fen, collect_fens
+
+# Load environment variables (important for CONN_STRING)
+load_dotenv('this_is_not_an_env.env')
+
+# Lifespan event handler for new asynchronous implementation
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Handles startup and shutdown events for the FastAPI application.
+    Initializes the asynchronous database connection.
+    """
+    print('Initializing LEELA Server...')
+    try:
+        # Call the asynchronous init_db
+        await init_db(CONN_STRING)
+        print('...LEELA Server ON...')
+        yield
+        # Add cleanup logic here if needed (e.g., closing engine)
+        # For now, FastAPI handles graceful shutdown of async connections by default
+    except Exception as e:
+        print(f"Failed to start LEELA Server due to database initialization error: {e}")
+        # Optionally re-raise or handle more gracefully based on desired app behavior
+        raise # Re-raise to prevent server from starting if DB init fails
+
+    print('...LEELA Server DOWN YO!...')
+
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/")
+async def read_root(): # Changed to async def as good practice for FastAPI endpoints
+    return "LEELA server running."
+
+# Include your existing routers
+app.include_router(fen.router)
+app.include_router(collect_fens.router)
+
+#ROUTERS_COLLECT_FENS database.routers.collect_fens.py
+
+import asyncio
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from database.operations.collect_fens import collect_fens_operations 
+
+router = APIRouter()
+
+@router.get("/collect_fens/{n_fens}")
+async def api_read_player_fen_analysis(n_games: int):
+    try:
+        fen_analysis = await collect_fens_operations(n_games)
+        return JSONResponse(content=fen_analysis)
+    except Exception as e:
+        print(f"Error in API endpoint for Collecting FENS : {e}")
+        return JSONResponse(content={"error": f"Failed to analyze FEN: {e}"}, status_code=500)
+
+#ROUTERS_FEN database.routers.fen.py
+
+import asyncio
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from database.operations.fen import analize_fen 
+
+router = APIRouter()
+
+@router.get("/fen/{fen:path}")
+async def api_read_player_fen_analysis(fen: str):
+    """
+    Analyzes a chess FEN position using the Lc0 (leela) engine.
+
+    Args:
+        fen: The FEN string of the chess position.
+
+    Returns:
+        JSONResponse: A JSON response containing the analysis results.
+    """
+    try:
+        fen_analysis = await analize_fen(fen) 
+        return JSONResponse(content=fen_analysis)
+    except Exception as e:
+        print(f"Error in API endpoint for FEN {fen}: {e}")
+        return JSONResponse(content={"error": f"Failed to analyze FEN: {e}"}, status_code=500)
+
+# OPERATIONS_COLLECT_FENS database.operations.collect_fens.py
+import time
+import chess
+from collections import defaultdict
+from typing import Any, Dict, List
+import asyncio
+from itertools import chain
+from fastapi import WebSocketDisconnect
+
+# Ensure these imports are correct for your structure
+from database.operations.connection import Connection # If still used for WebSockets
+# IMPORTANT: Now import the async versions from ask_db
+from database.database.ask_db import open_async_request, get_one_game, get_new_games_links # Changed import
+from database.operations.models import MainFenCreateData, ProcessedGameCreateData
+from database.database.db_interface import DBInterface # This now points to your async DBInterface
+from database.database.models import MainFen, Fen, ProcessedGame # Ensure all models are imported
+from sqlalchemy.orm import Session # For type hinting synchronous session (if any)
+from database.database.engine import AsyncDBSession # Import AsyncDBSession for internal session management
+from sqlalchemy import select # Ensure select is imported for ORM queries
+
+# Add a BATCH_SIZE constant for querying existing FENs
+EXISTING_FENS_QUERY_BATCH_SIZE = 10000 # Adjust this based on your database and typical list sizes
+
+# --- Helper function: Generates FENs for a single game's moves ---
+def generate_fens_for_single_game_moves(moves: list[dict]) -> list[str]:
+    """
+    Generates a sequence of FENs for a single chess game given its moves.
+    Includes validation for the resulting FENs.
+    Returns an empty list if an invalid move or FEN is encountered.
+
+    Args:
+        moves (list[dict]): A list of dictionaries, where each dictionary represents
+                            a move with keys 'n_move', 'white_move', 'black_move'.
+
+    Returns:
+        list[str]: A list of valid FEN strings representing the board state after each half-move.
+                   Returns an empty list if an invalid move or malformed FEN is found.
+    """
+    board = chess.Board()
+    fens_sequence = []
+    
+    for ind, move in enumerate(moves):
+        # Basic assertion to check move order consistency,
+        # There are some games that begin in a random move, we don't want those
+        if move['n_move'] != ind + 1:
+            return [] # Changed from False to []
+            
+        n_move = move['n_move']
+        white_move_san = move.get('white_move') # Use .get() for safer access
+        black_move_san = move.get('black_move') # Use .get() for safer access
+
+        # Apply White's move and get FEN
+        if white_move_san: # Only attempt if white_move exists
+            try:
+                move_obj_white = board.parse_san(white_move_san)
+                board.push(move_obj_white)
+                current_fen = board.fen()
+                # --- FEN VALIDATION AT GENERATION ---
+                try:
+                    # Attempt to create a board from the generated FEN to validate it
+                    _ = chess.Board(current_fen) 
+                    fens_sequence.append(current_fen)
+                except ValueError as e:
+                    # If the generated FEN itself is invalid, skip this game's FENs
+                    # print(f"Invalid FEN generated for game link {move.get('link') if 'link' in move else 'unknown'} at move {n_move} (White): {current_fen} - {e}")
+                    return [] 
+            except (ValueError, chess.InvalidMoveError) as e:
+                # print(f"Error applying White's move '{white_move_san}' at move number {n_move}: {e}")
+                return [] # Return empty list if an invalid move is found
+        
+        # Apply Black's move and get FEN (only if black_move exists and white's move was successful)
+        if black_move_san: # Only attempt if black_move exists
+            try:
+                move_obj_black = board.parse_san(black_move_san)
+                board.push(move_obj_black)
+                current_fen = board.fen()
+                # --- FEN VALIDATION AT GENERATION ---
+                try:
+                    # Attempt to create a board from the generated FEN to validate it
+                    _ = chess.Board(current_fen)
+                    fens_sequence.append(current_fen)
+                except ValueError as e:
+                    # If the generated FEN itself is invalid, skip this game's FENs
+                    # print(f"Invalid FEN generated for game link {move.get('link') if 'link' in move else 'unknown'} at move {n_move} (Black): {current_fen} - {e}")
+                    return []
+            except (ValueError, chess.InvalidMoveError) as e:
+                # print(f"Error applying Black's move '{black_move_san}' at move number {n_move}: {e}")
+                return [] # Return empty list if an invalid move is found
+                
+    return fens_sequence
+
+# --- Optimized Database Fetching Function (NOW ASYNC) ---
+async def get_all_moves_for_links_batch(game_links: List[int]) -> Dict[int, list[dict]]: # Changed type hint for game_links, and return dict key
+    """
+    Fetches all moves for a given list of game links in a single batched query
+    to the database asynchronously.
+    """
+    if not game_links:
+        return {}
+
+    # CORRECTED SQL SYNTAX: Explicitly cast the bound parameter as a bigint array.
+    # This helps asyncpg understand the type without syntax errors.
+    sql_query = """
+    SELECT link, n_move, white_move, black_move
+    FROM moves
+    WHERE link = ANY(CAST(:game_links AS bigint[]))
+    ORDER BY link, n_move;
+    """
+    # Use open_async_request and await it
+    result_tuples = await open_async_request(sql_query, params={"game_links": game_links})
+
+    grouped_moves = defaultdict(list)
+    for row in result_tuples:
+        link, n_move, white_move, black_move = row
+        grouped_moves[link].append({
+            'n_move': n_move,
+            'white_move': white_move,
+            'black_move': black_move
+        })
+    return grouped_moves
+
+# --- Main FEN Generation Orchestrator (NOW ASYNC) ---
+async def get_fens_from_games_optimized(new_game_links_data: list[tuple]) -> list[str]:
+    """
+    Retrieves and generates unique FENs for a list of game links asynchronously.
+    """
+    all_fens = set()
+    game_links_only = [x[0] for x in new_game_links_data]
+
+    start_db_fetch = time.time()
+    # Fetch all moves for all games in a single batched query - NOW AWAITING
+    all_game_moves_grouped = await get_all_moves_for_links_batch(game_links_only)
+    db_fetch_time = time.time() - start_db_fetch
+    # print(f"Time to fetch all game moves from DB (batched): {db_fetch_time:.4f} seconds")
+
+    total_fen_generation_time = 0
+    games_processed = 0
+    
+    for game_link in game_links_only:
+        game_moves = all_game_moves_grouped.get(game_link)
+        
+        if game_moves:
+            fen_gen_start = time.time()
+            try:
+                game_fens = generate_fens_for_single_game_moves(game_moves)
+                all_fens.update(game_fens) # Add FENs to the set
+                games_processed += 1
+            except Exception as e: # Catch any unexpected errors during FEN generation
+                print(f"An unexpected error occurred while processing game {game_link}: {e}")
+                # Continue to the next game even if one game fails
+            total_fen_generation_time += (time.time() - fen_gen_start)
+        else:
+            # print(f"No moves found in the database for game link: {game_link}")
+            pass # Suppress print for now
+
+    if games_processed > 0:
+        # print(f"Mean FEN generation time per game (excluding DB fetch): {total_fen_generation_time / games_processed:.4f} seconds")
+        pass # Suppress print for now
+        
+    return list(all_fens) # Convert the set back to a list for the final output
+
+
+# This function now calls the (now async) open_async_request
+async def get_new_fens(posible_fens: list[str]) -> list[dict]: # Corrected return type hint
+    """
+    Compares a list of possible FENs against known FENs in the 'main_fen' table
+    and returns only the FENs that are not already present at the DB.
+
+    Args:
+        posible_fens (list[str]): A list of FEN strings to check.
+
+    Returns:
+        list[dict]: A list of dictionaries, where each dictionary contains
+                    'fen', 'n_games', and 'moves_counter' for new FENs.
+    """
+    if not posible_fens:
+        return []
+
+    # CORRECTED SQL SYNTAX: Explicitly cast the bound parameter as a text array.
+    # This helps asyncpg understand the type without syntax errors.
+    sql_query = """
+    SELECT p_fen.f
+    FROM UNNEST(CAST(:posible_fens AS text[])) AS p_fen(f)
+    LEFT JOIN main_fen AS rf ON p_fen.f = rf.fen
+    WHERE rf.fen IS NULL;
+    """
+    # Use open_async_request and await it
+    result_tuples = await open_async_request(sql_query, params={"posible_fens": posible_fens})
+    new_raw_fens = list(chain.from_iterable(result_tuples))
+
+    new_fens_data = [simplify_fen_and_extract_counters_for_insert(f) for f in new_raw_fens]
+    
+    return new_fens_data
+
+# --- Functions for Inserting Data (Adjusted for your DBInterface) ---
+# This function is already async and its internal calls are handled
+async def insert_fens(fens_raw_from_games: List[Dict[str, Any]]):
+    """
+    Aggregates incoming FENs (handling duplicates within the batch),
+    then separates them into existing and new for bulk updates and inserts.
+    """
+    if not fens_raw_from_games:
+        print("No FENs to insert or update.")
+        return
+
+    # --- NEW STEP 0: Aggregate duplicate FENs within the incoming batch ---
+    aggregated_fens: Dict[str, Dict[str, Any]] = {}
+    for fen_data in fens_raw_from_games:
+        fen_str = fen_data['fen']
+        moves_counter = fen_data['moves_counter']
+
+        if fen_str not in aggregated_fens:
+            aggregated_fens[fen_str] = {
+                'fen': fen_str,
+                'n_games_in_batch': 1,
+                'moves_counter_in_batch': moves_counter
+            }
+        else:
+            aggregated_fens[fen_str]['n_games_in_batch'] += 1
+            
+            current_batch_moves = aggregated_fens[fen_str]['moves_counter_in_batch'].split('#') if aggregated_fens[fen_str]['moves_counter_in_batch'] else []
+            new_moves_from_current_occurrence = moves_counter.split('#') if moves_counter else []
+            
+            for move_part in new_moves_from_current_occurrence:
+                if move_part and move_part not in current_batch_moves:
+                    current_batch_moves.append(move_part)
+            
+            aggregated_fens[fen_str]['moves_counter_in_batch'] = '#'.join(current_batch_moves)
+
+    fens_to_process = list(aggregated_fens.values())
+    print(f"Aggregated {len(fens_raw_from_games)} raw FENs down to {len(fens_to_process)} unique FENs for processing.")
+
+    incoming_fen_strings = [d['fen'] for d in fens_to_process]
+    
+    async with AsyncDBSession() as session:
+        try:
+            existing_fens_map = {}
+
+            for i in range(0, len(incoming_fen_strings), EXISTING_FENS_QUERY_BATCH_SIZE):
+                batch_fen_strings = incoming_fen_strings[i : i + EXISTING_FENS_QUERY_BATCH_SIZE]
+                
+                batch_existing_records = (await session.execute(
+                    select(MainFen.fen, MainFen.n_games, MainFen.moves_counter)
+                    .filter(MainFen.fen.in_(batch_fen_strings))
+                )).all()
+
+                for rec in batch_existing_records:
+                    existing_fens_map[rec.fen] = {
+                        'n_games': rec.n_games,
+                        'moves_counter': rec.moves_counter
+                    }
+            
+            print(f"Identified {len(existing_fens_map)} FENs already in the database after all batches.")
+            if existing_fens_map:
+                pass
+
+            fens_for_insert_batch = []
+            fens_for_update_batch = []
+
+            for processed_fen_data in fens_to_process:
+                fen_str = processed_fen_data['fen']
+                batch_n_games = processed_fen_data['n_games_in_batch']
+                batch_moves_counter = processed_fen_data['moves_counter_in_batch']
+
+                if fen_str in existing_fens_map:
+                    existing_db_data = existing_fens_map[fen_str]
+                    
+                    updated_n_games = existing_db_data['n_games'] + batch_n_games
+
+                    current_db_moves_list = existing_db_data['moves_counter'].split('#') if existing_db_data['moves_counter'] else []
+                    current_batch_moves_list = batch_moves_counter.split('#') if batch_moves_counter else []
+                    
+                    for move_part in current_batch_moves_list:
+                        if move_part and move_part not in current_batch_moves_list: # Check if move_part already in list
+                            current_db_moves_list.append(move_part)
+                    
+                    updated_moves_counter_str = '#'.join(current_db_moves_list)
+
+                    fens_for_update_batch.append({
+                        'fen': fen_str,
+                        'n_games': updated_n_games,
+                        'moves_counter': updated_moves_counter_str
+                    })
+                else:
+                    fens_for_insert_batch.append(
+                        MainFenCreateData(
+                            fen=fen_str,
+                            n_games=batch_n_games,
+                            moves_counter=batch_moves_counter
+                        ).model_dump()
+                    )
+            
+            if fens_for_insert_batch:
+                try:
+                    await session.run_sync(
+                        lambda sync_session: sync_session.bulk_insert_mappings(MainFen, fens_for_insert_batch)
+                    )
+                    print(f"Successfully bulk inserted {len(fens_for_insert_batch)} new FENs.")
+                except Exception as e:
+                    print(f"Error during bulk insert of new FENs: {e}")
+                    raise
+
+            if fens_for_update_batch:
+                try:
+                    await session.run_sync(
+                        lambda sync_session: sync_session.bulk_update_mappings(MainFen, fens_for_update_batch)
+                    )
+                    print(f"Successfully bulk updated {len(fens_for_update_batch)} existing FENs.")
+                except Exception as e:
+                    print(f"Error during bulk update of existing FENs: {e}")
+                    raise
+            
+            await session.commit()
+            print("FEN insertion/update process complete.")
+
+        except Exception as e:
+            await session.rollback()
+            print(f"An unexpected error occurred during FEN processing: {e}")
+            raise
+
+# This function is already async
+async def insert_processed_game_links(links: list[tuple]):
+    """
+    Inserts a list of game links into the processed_game_links table asynchronously.
+    """
+    if not links:
+        print("No game links to insert into processed_game table.")
+        return
+
+    try:
+        to_insert_data = [{'link': x[0]} for x in links]
+        processed_links_data = [ProcessedGameCreateData(**data).model_dump() for data in to_insert_data]
+
+        processed_link_interface = DBInterface(ProcessedGame)
+        await processed_link_interface.create_all(processed_links_data) # Await create_all
+        print(f"Successfully inserted {len(links)} game links into processed_game.")
+    except Exception as e:
+        print(f"Error inserting game links into processed_game: {e}")
+        raise
+
+# This function is already async, but its internal calls need await
+async def collect_fens_operations(n_games):
+    """
+    Orchestrates the collection of FENs from new games, their analysis,
+    and insertion into the database asynchronously.
+    """
+    # get_new_games_links is now async and needs await
+    new_game_links = await get_new_games_links(n_games)
+    
+    start_total_fen_gen = time.time()
+    # get_fens_from_games_optimized is now async and needs await
+    fen_set_from_games = await get_fens_from_games_optimized(new_game_links)
+    # print(f'{len(fen_set_from_games)} fens from {len(new_game_links)}',time.time()-start_total_fen_gen)
+
+    start_new_fens_check = time.time()
+    # get_new_fens is now async and needs await
+    new_fens = await get_new_fens(fen_set_from_games)
+    # print(f'{len(new_fens)} fens','time elapsed: ',time.time()-start_new_fens_check)
+    
+    print("\n--- Inserting data into the database ---")
+    start_insert_fens = time.time()
+    await insert_fens(new_fens) # Await the async insert_fens
+    print('insert_fens time elapsed: ', time.time() - start_insert_fens)
+    
+    start_insert_games = time.time()
+    await insert_processed_game_links(new_game_links) # Await the async insert_processed_game_links
+    print('insert_games time elapsed: ', time.time() - start_insert_games)
+
+    return f"{len(new_fens)} NEW FENS from {len(new_game_links)} NEW GAMES"
+
+def simplify_fen_and_extract_counters_for_insert(full_fen: str) -> dict: # Changed return type hint
+    """
+    Takes a full FEN string, extracts the halfmove clock and fullmove number,
+    and returns the simplified FEN along with the extracted counters as a string.
+
+    Args:
+        full_fen (str): The complete FEN string (e.g., 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1').
+
+    Returns:
+        dict: A dictionary containing:
+            - "fen": The simplified FEN string.
+            - "n_games": Defaulted to 1 for initial insertion.
+            - "moves_counter": A string containing the halfmove clock and fullmove number, separated by '#'.
+    """
+    parts = full_fen.split(' ')
+
+    simplified_fen = full_fen # Default in case of malformed FEN
+    extracted_counters = ""
+
+    if len(parts) >= 4:
+        simplified_fen_parts = parts[0:4]
+        simplified_fen = ' '.join(simplified_fen_parts)
+
+        if len(parts) >= 6:
+            halfmove_clock = parts[4]
+            fullmove_number = parts[5]
+            extracted_counters = f"{halfmove_clock}#{fullmove_number}" # Remove leading/trailing '#' to be cleaner
+        else:
+            # print(f"Warning: FEN '{full_fen}' does not contain expected halfmove or fullmove numbers.")
+            pass # Suppress print
+    else:
+        # print(f"Error: Malformed FEN string provided: '{full_fen}'. Expected at least 4 parts.")
+        pass # Suppress print
+
+    return {"fen":simplified_fen, "n_games": 1, "moves_counter":extracted_counters}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#PART TWO:
+# OPERATIONS_FENS 
+import os
+import chess
+import chess.engine
+import asyncio
+import time # Import time for logging execution duration
+import psutil # Import psutil for system resource monitoring
+import subprocess # For calling external commands like nvidia-smi
+import json # For parsing nvidia-smi output (if available)
+import re # Import re for regular expressions
+from typing import List, Dict, Any # Added for more specific type hints
+import logging # Import logging module
+
+# Configure logging for chess.engine to suppress verbose tracebacks
+# This will prevent the InvalidMoveError traceback from appearing in the console
+# for errors originating within the chess.engine module itself.
+logging.getLogger("chess.engine").setLevel(logging.ERROR) # Changed back to ERROR for better visibility of engine issues
+logging.getLogger("asyncio").setLevel(logging.ERROR) # Suppress asyncio internal logs only to ERROR, not CRITICAL
+# Removed: logging.getLogger().setLevel(logging.ERROR) to allow other module logs
+
+from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
+from database.operations.models import FenCreateData
+from database.database.db_interface import DBInterface # This now points to your async DBInterface
+from database.database.models import Fen, MainFen # Ensure Fen is imported
+from database.database.ask_db import open_async_request
+# Corrected Import: generate_fens_for_single_game_moves is in collect_fens.py
+from database.operations.collect_fens import generate_fens_for_single_game_moves,get_all_moves_for_links_batch, insert_fens, insert_processed_game_links, simplify_fen_and_extract_counters_for_insert
+
+
+async def initialize_lc0_engine() -> chess.engine.UciProtocol:
+    """
+    Launches and configures the Leela Chess Zero (Lc0) engine.
+    Returns:
+        An initialized Lc0 engine instance (chess.engine.UciProtocol).
+    Raises:
+        Exception: If the engine fails to launch or configure.
+    """
+    engine_uci = None
+    try:
+        print("Launching Lc0 engine...")
+        transport, engine_uci = await chess.engine.popen_uci(
+            LC0_PATH,
+            cwd=lc0_directory,
+            # Direct stderr to DEVNULL to suppress all engine-specific error messages
+            # like "invalid uci (use 0000 for null moves): 'a1a1'" that bypass Python's logging.
+            stderr=subprocess.DEVNULL 
+        )
+
+        weights = os.path.join(lc0_directory, LC0_WEIGHTS_FILE)
+        await engine_uci.configure({
+            "WeightsFile": weights,
+            "Backend": "cuda-fp16",
+            "Threads": 1,
+            "MinibatchSize": 1024
+        })
+
+        return engine_uci
+    except Exception as e:
+        print(f"Error initializing Lc0 engine: {e}")
+        if engine_uci:
+            # Attempt to quit gracefully, but if it fails, just close the transport
+            try:
+                await engine_uci.quit()
+            except Exception as quit_e:
+                print(f"Error quitting Lc0 engine during init failure: {quit_e}. Attempting to close transport.")
+                # If engine.quit() fails, force close the transport
+                if hasattr(engine_uci, 'transport') and engine_uci.transport:
+                    engine_uci.transport.close()
+        raise
+
+async def analyze_single_position(engine_uci: chess.engine.UciProtocol,
+                                  fen: str, nodes_limit: int = 50000) -> dict:
+    """
+    Analyzes a fen with Leela.
+    
+    Args:
+        engine_uci: Leela engine instance.
+        fen: a self explanatory fen.
+        nodes_limit: The maximum number of nodes Lc0 should explore, default:50_000.
+
+    Returns:
+        A dictionary containing score in centipawns and principal variation and stuff.
+    """
+    board = chess.Board(fen)
+    
+    # Define a reasonable timeout for single FEN analysis to prevent hangs
+    # Adjust this value based on expected performance; 60 seconds is a starting point.
+    ANALYSIS_TIMEOUT_SECONDS = 90 
+
+    try:
+        limit = chess.engine.Limit(nodes=nodes_limit, time=ANALYSIS_TIMEOUT_SECONDS) # Added time limit
+        info = await engine_uci.analyse(board, limit=limit)
+        
+        # Ensure that score and pv are extracted safely
+        score = info["score"].white().score(mate_score=10000) / 100
+        
+        pv = []
+        if "pv" in info and info["pv"] is not None:
+            for move_obj in info["pv"]:
+                try:
+                    # Lc0 might return unexpected move objects or even None in rare cases.
+                    # Ensure it's a valid move object before calling .uci()
+                    if isinstance(move_obj, chess.Move):
+                        pv.append(move_obj.uci())
+                    else:
+                        logging.warning(f"Unexpected PV element type for FEN {fen}: {type(move_obj)}")
+                except Exception as pv_error:
+                    logging.warning(f"Error processing PV move for FEN {fen}: {move_obj}, Error: {pv_error}")
+
+        # Prepare data for insertion
+        fen_data_for_db = {
+            'fen': fen,
+            'depth': info.get('depth'),
+            'seldepth': info.get('seldepth'),
+            'time': info.get('time'),
+            'nodes': info.get('nodes'),
+            'score': score,
+            'tbhits': info.get('tbhits', 0), # Default to 0 if not present
+            'nps': info.get('nps', 0) # Default to 0 if nps is None
+        }
+
+        # Validate with Pydantic model (optional but good practice)
+        fen_create_data = FenCreateData(**fen_data_for_db)
+        
+        fen_interface = DBInterface(Fen)
+        # Await the create method, as DBInterface methods are now async
+        await fen_interface.create(fen_create_data.model_dump())
+        
+        # Modify info to be returned
+        info['fen'] = fen
+        info['score'] = score
+        info['pv'] = ''.join([move+'##' for move in pv])
+        
+        return info
+
+    except chess.engine.Timeout: # Catch specific timeout error
+        return {"fen": fen, "error": f"Lc0 Analysis Timeout after {ANALYSIS_TIMEOUT_SECONDS} seconds."}
+    except chess.engine.EngineError as e:
+        # Check if the error message is specifically about invalid UCI moves
+        if "invalid uci" in str(e).lower():
+            # Suppress console print for this specific, common error
+            pass 
+        else:
+            # For other engine errors, print a general message (optional, as analyze_fens_from_main_fen_batch already logs)
+            # print(f"Lc0 Engine Error for FEN {fen}: {e}")
+            pass
+        return {"fen": fen, "error": f"Lc0 Engine Error: {str(e)}"}
+    except ValueError as e:
+        # No print here, handled by batch function
+        return {"fen": fen, "error": f"Result Parsing Error: {str(e)}"}
+    except Exception as e:
+        # No print here, handled by batch function
+        return {"fen": fen, "error": f"Unexpected Analysis Error: {str(e)}"}
+
+
+async def analize_fen(fen: str) -> dict:
+    """
+    Initializes a Leela engine instance.
+    Asks the engine for the analysis of the fen.
+    
+    Args:
+        fen: a string in a fen format.
+    Returns:
+        A dictionary containing the fen as key and the stuff as values.
+    """
+    engine = None
+    try:
+        engine = await initialize_lc0_engine() # Await engine initialization
+        analysis_result = await analyze_single_position(engine, fen, nodes_limit=50000) # Await analysis
+        return analysis_result
+    except Exception as e:
+        # Keep this print for top-level API calls for immediate feedback
+        print(f"Error in analize_fen for FEN {fen}: {e}")
+        return {"fen": fen, "error": f"Analysis failed: {e}"}
+    finally:
+        if engine:
+            print(f"Quitting Lc0 engine for FEN {fen}...")
+            # Ensure engine quits gracefully or transport is closed
+            try:
+                # Attempt to quit gracefully first
+                await engine.quit()
+            except Exception as e:
+                # If quit() fails (e.g., process already dead/unresponsive), force close transport
+                print(f"Error quitting Lc0 engine in analize_fen: {e}. Attempting to force close transport.")
+                if hasattr(engine, 'transport') and engine.transport:
+                    engine.transport.close()
+            print(f"Lc0 engine quit for FEN {fen}.")
+
+
+def get_system_metrics():
+    """Fetches current CPU, RAM, and NVIDIA GPU usage (if nvidia-smi is available)."""
+    metrics = {}
+    # CPU Usage
+    metrics['cpu_percent'] = psutil.cpu_percent(interval=None) # Non-blocking call
+    # RAM Usage
+    mem = psutil.virtual_memory()
+    metrics['ram_percent'] = mem.percent
+    metrics['ram_used_gb'] = round(mem.used / (1024**3), 2)
+    metrics['ram_total_gb'] = round(mem.total / (1024**3), 2)
+
+    # GPU Usage (NVIDIA specific via nvidia-smi, adjusted for WSL version)
+    NVIDIA_SMI_PATH = '/usr/lib/wsl/lib/nvidia-smi' # Your identified path
+
+    try:
+        # Run nvidia-smi without query/format flags, as it doesn't support them in WSL version
+        result = subprocess.run(
+            [NVIDIA_SMI_PATH],
+            capture_output=True, text=True, check=True
+        )
+        output_lines = result.stdout.splitlines()
+
+        # Parse the output for RTX 4060 (Assuming it's GPU 0 as per your log)
+        rtx_4060_found = False
+        gpu_data_line = ""
+        # Improved logic to find the specific GPU data line
+        for i, line in enumerate(output_lines):
+            # Look for the line containing the GPU name
+            if "NVIDIA GeForce RTX 4060" in line:
+                rtx_4060_found = True
+                # The data line is usually the one immediately following the GPU name line
+                if i + 1 < len(output_lines):
+                    gpu_data_line = output_lines[i + 1]
+                break # Found the GPU, no need to search further
+
+        if rtx_4060_found and gpu_data_line:
+            # Use regex to robustly extract values
+            # Example line: |  0%   44C    P8            N/A  /  115W |    1672MiB /   8188MiB |     45%      Default |
+
+            # Temperature: look for digits followed by 'C'
+            temp_match = re.search(r'(\d+)C', gpu_data_line)
+            metrics['gpu_temperature_celsius'] = int(temp_match.group(1)) if temp_match else "N/A"
+
+            # Memory Usage: look for digitsMiB / digitsMiB
+            mem_match = re.search(r'(\d+)MiB\s+/\s+(\d+)MiB', gpu_data_line)
+            if mem_match:
+                mem_used_mib = int(mem_match.group(1))
+                mem_total_mib = int(mem_match.group(2))
+                metrics['gpu_memory_used_mb'] = mem_used_mib
+                metrics['gpu_memory_total_mb'] = mem_total_mib
+                metrics['gpu_memory_used_gb'] = round(mem_used_mib / 1024, 2)
+                metrics['gpu_memory_total_gb'] = round(mem_total_mib / 1024, 2)
+            else:
+                 metrics['gpu_memory_used_mb'] = "N/A"
+                 metrics['gpu_memory_total_mb'] = "N/A"
+                 metrics['gpu_memory_used_gb'] = "N/A"
+                 metrics['gpu_memory_total_gb'] = "N/A"
+
+            # GPU Utilization: look for digits% preceded by a space or pipe, and followed by a space
+            # This regex targets the utilization percentage in the specific column structure.
+            # It looks for a percentage that is part of the utilization string, typically
+            # found in the latter parts of the line, after memory.
+            util_match = re.search(r'(\d+)%\s+Default', gpu_data_line) # More precise match
+            if util_match:
+                metrics['gpu_utilization_percent'] = int(util_match.group(1))
+            else:
+                # Fallback to broader search if precise one fails, or set to N/A
+                util_match_fallback = re.search(r'\|\s*(\d+)%', gpu_data_line)
+                metrics['gpu_utilization_percent'] = int(util_match_fallback.group(1)) if util_match_fallback else "N/A"
+
+
+        elif not rtx_4060_found:
+            metrics['gpu_info'] = "NVIDIA GeForce RTX 4060 not found in nvidia-smi output."
+        else: # If found but data_line is empty
+            metrics['gpu_info'] = "Could not parse NVIDIA GeForce RTX 4060 data line."
+
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        metrics['gpu_info'] = f"NVIDIA GPU not found or nvidia-smi error: {e}"
+    except Exception as e: # Catch any parsing errors
+        metrics['gpu_info'] = f"NVIDIA GPU metrics parsing error: {e}. Raw line: {gpu_data_line}"
+
+    return metrics
+
+
+async def analyze_fens_from_main_fen_batch(batch_size: int = 100, nodes_limit: int = 50000) -> List[dict]:
+    """
+    Fetches a batch of unanalyzed FENs from 'main_fen' table,
+    analyzes them concurrently using Lc0, and stores results in 'fen' table.
+    Logs execution times and system resource usage.
+
+    Args:
+        batch_size (int): The number of FENs to fetch and analyze in this batch.
+        nodes_limit (int): The maximum number of nodes Lc0 should explore for each FEN.
+
+    Returns:
+        List[dict]: A list of analysis results for the processed FENs,
+                    including any errors encountered for specific FENs.
+    """
+    start_total_time = time.time()
+    print("\n--- Starting Batch FEN Analysis ---")
+    print(f"Initial System Metrics: {get_system_metrics()}")
+
+    engine = None
+    analysis_results = []
+    # Define a semaphore to limit concurrent analysis calls to the Lc0 engine
+    # Starting with 1 to ensure commands are strictly sequential to the engine.
+    # Adjust this value (e.g., 2, 4) to find optimal concurrency for your GPU.
+    analysis_semaphore = asyncio.Semaphore(1) 
+    
+    try:
+        # 1. Get unanalyzed FENs from the database
+        start_db_fetch_time = time.time()
+        fens_to_analyze = await get_unanalyzed_fens(limit=batch_size)
+        db_fetch_duration = time.time() - start_db_fetch_time
+        print(f"Time to fetch {len(fens_to_analyze)} unanalyzed FENs from DB: {db_fetch_duration:.4f} seconds")
+        print(f"System Metrics after DB Fetch: {get_system_metrics()}")
+
+        if not fens_to_analyze:
+            print("No unanalyzed FENs found in 'main_fen' for this batch.")
+            return []
+
+        print(f"Starting analysis for {len(fens_to_analyze)} unanalyzed FENs using a semaphore...")
+        
+        # 2. Initialize Lc0 engine once for the batch
+        start_engine_init_time = time.time()
+        engine = None # Initialize engine to None before attempting to create
+        try:
+            engine = await initialize_lc0_engine()
+        except Exception as e:
+            print(f"Failed to initialize Lc0 engine for batch analysis: {e}")
+            # If engine initialization fails, we cannot proceed with analysis
+            return [{"error": f"Failed to initialize Lc0 engine: {e}"}]
+
+        engine_init_duration = time.time() - start_engine_init_time
+        print(f"Time to initialize Lc0 engine: {engine_init_duration:.4f} seconds")
+        print(f"System Metrics after Engine Init: {get_system_metrics()}")
+
+
+        # 3. Create a list of analysis tasks
+        analysis_tasks = []
+        for fen_str in fens_to_analyze:
+            task = analyze_single_position_with_semaphore(engine, fen_str, nodes_limit, analysis_semaphore)
+            analysis_tasks.append(task)
+        
+        # 4. Run analyses concurrently (limited by semaphore)
+        start_analysis_run_time = time.time()
+        results = await asyncio.gather(*analysis_tasks, return_exceptions=True)
+        analysis_run_duration = time.time() - start_analysis_run_time
+        print(f"Time for Lc0 analysis run for {len(fens_to_analyze)} FENs: {analysis_run_duration:.4f} seconds")
+        print(f"System Metrics after Analysis Run: {get_system_metrics()}")
+
+
+        # Process results
+        for i, result in enumerate(results):
+            fen_str = fens_to_analyze[i]
+            if isinstance(result, Exception):
+                # The analyze_single_position_with_semaphore now returns dict with error
+                # so this 'if isinstance(result, Exception)' block might not be hit
+                # unless a very critical, unexpected error propagates from asyncio.gather itself.
+                print(f"Critical error during analysis of FEN {fen_str}: {result}")
+                analysis_results.append({"fen": fen_str, "error": str(result)})
+            else:
+                analysis_results.append(result)
+        
+        print(f"Finished analysis for {len(analysis_results)} FENs.")
+        return analysis_results
+
+    except Exception as e:
+        print(f"An unexpected error occurred during batch FEN analysis: {e}")
+        return [{"error": f"Batch analysis failed: {e}"}]
+    finally:
+        if engine:
+            start_engine_quit_time = time.time()
+            print("Quitting Lc0 engine after batch analysis...")
+            # Ensure engine quits gracefully or transport is closed
+            try:
+                # Give tasks a moment to finish any lingering operations,
+                # e.g., releasing semaphore, before quitting the engine
+                await asyncio.sleep(0.1) 
+                # Attempt to quit gracefully first
+                await engine.quit()
+            except Exception as e:
+                # If quit() fails (e.g., process already dead/unresponsive), force close transport
+                print(f"Error quitting Lc0 engine: {e}. Attempting to force close transport.")
+                if hasattr(engine, 'transport') and engine.transport:
+                    engine.transport.close()
+            engine_quit_duration = time.time() - start_engine_quit_time
+            print(f"Time to quit Lc0 engine: {engine_quit_duration:.4f} seconds")
+            print(f"Final System Metrics after Engine Quit: {get_system_metrics()}")
+            print(f"Total Batch Analysis Duration: {time.time() - start_total_time:.4f} seconds")
+            print("Lc0 engine quit.")
+
+# Helper function to wrap analyze_single_position with a semaphore
+async def analyze_single_position_with_semaphore(engine_uci: chess.engine.UciProtocol,
+                                                 fen: str, nodes_limit: int,
+                                                 semaphore: asyncio.Semaphore) -> dict:
+    """
+    Acquires the semaphore before calling analyze_single_position, releasing it afterwards.
+    """
+    async with semaphore:
+        return await analyze_single_position(engine_uci, fen, nodes_limit)
+
+
+async def get_main_fen_non_single_game_objects() -> List[Dict[str, Any]]:
+    """
+    Fetches FEN objects from 'main_fen' table where 'n_games' is not equal to 1.
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries, where each dictionary represents
+                              a FEN object with 'fen', 'n_games', and 'moves_counter'.
+    """
+    sql_query = "SELECT fen, n_games, moves_counter FROM main_fen WHERE n_games > 2;" # Changed condition
+    # Use fetch_as_dict=True to get results as dictionaries directly
+    result = await open_async_request(sql_query, fetch_as_dict=True)
+    return result
+
+async def get_game_links_by_username(username: str, limit: int = 100) -> List[int]: # Added limit parameter
+    """
+    Fetches game links from the 'game' table for a given username,
+    excluding those already marked as processed in 'processed_game_links',
+    up to a specified limit.
+
+    Args:
+        username (str): The username to search for.
+        limit (int): The maximum number of game links to fetch.
+
+    Returns:
+        List[int]: A list of new, unprocessed game links (integers) for the user.
+    """
+    sql_query = """
+    SELECT g.link
+    FROM game AS g
+    LEFT JOIN processed_game AS pgl ON g.link = pgl.link
+    WHERE (g.white = :username OR g.black = :username) AND pgl.link IS NULL
+    LIMIT :limit; -- Added LIMIT clause
+    """
+    # Use open_async_request and await it. Fetch values directly as links.
+    result_tuples = await open_async_request(sql_query, params={"username": username, "limit": limit})
+    # Extract just the link (which is the first and only element in each tuple)
+    return [link[0] for link in result_tuples]
+
+async def analyze_user_games_fens(username: str, n_games:int= 10,batch_size: int = 100, nodes_limit: int = 50000) -> Dict[str, Any]:
+    """
+    Fetches games played by a specific user, generates FENs for those games,
+    and then analyzes these FENs using Lc0, storing results in the 'fen' table.
+    Crucially, it now also inserts/updates FENs into 'main_fen' and marks
+    games as processed in 'processed_game_links' before analysis.
+    The number of games fetched is limited by the 'batch_size' parameter.
+
+    Args:
+        username (str): The username whose games should be analyzed.
+        batch_size (int): The number of FENs to process in each analysis batch.
+                          This also acts as the limit for fetching new game links.
+        nodes_limit (int): The maximum number of nodes Lc0 should explore for each FEN.
+
+    Returns:
+        Dict[str, Any]: A dictionary summarizing the analysis process,
+                        including counts of FENs processed and any errors.
+    """
+    total_start_time = time.time()
+    print(f"\n--- Starting FEN Analysis for User: {username} ---")
+    print(f"Initial System Metrics: {get_system_metrics()}")
+
+    try:
+        # 1. Fetch game links for the specified user
+        # This now only fetches games NOT yet in processed_game_links, up to 'batch_size'
+        print(f"Fetching {batch_size} NEW game links for user '{username}'...")
+        start_fetch_links = time.time()
+        user_game_links = await get_game_links_by_username(username, limit=n_games) # Pass batch_size as limit
+        fetch_links_duration = time.time() - start_fetch_links
+        print(f"Time to fetch {len(user_game_links)} NEW game links for user '{username}': {fetch_links_duration:.4f} seconds")
+        
+        if not user_game_links:
+            print(f"No NEW games found for user '{username}' to analyze.")
+            return {"status": "completed", "message": f"No NEW games found for user '{username}' to analyze."}
+
+        # 2. Generate FENs from these games
+        print(f"Generating FENs from {len(user_game_links)} NEW games...")
+        start_fen_gen = time.time()
+        
+        generated_fens = []
+        all_moves_grouped = await get_all_moves_for_links_batch(user_game_links)
+
+        for game_link in user_game_links:
+            moves_for_game = all_moves_grouped.get(game_link)
+            if moves_for_game:
+                game_fens = generate_fens_for_single_game_moves(moves_for_game) # This function performs FEN validation
+                generated_fens.extend(game_fens)
+        
+        unique_generated_fens = list(set(generated_fens)) # Ensure uniqueness
+        fen_gen_duration = time.time() - start_fen_gen
+        print(f"Generated {len(unique_generated_fens)} unique FENs from user's NEW games (after validation): {fen_gen_duration:.4f} seconds")
+        print(f"System Metrics after FEN Generation: {get_system_metrics()}")
+
+        if not unique_generated_fens:
+            print(f"No valid FENs could be generated from NEW games for user '{username}'.")
+            # Even if no FENs, we still want to mark the games as processed if they were fetched.
+            # This is important to prevent re-fetching invalid games repeatedly.
+            print(f"Marking {len(user_game_links)} games (that yielded no valid FENs) as processed...")
+            start_processed_links_insert = time.time()
+            links_for_processed_table = [(link,) for link in user_game_links]
+            await insert_processed_game_links(links_for_processed_table)
+            processed_links_insert_duration = time.time() - start_processed_links_insert
+            print(f"Time to insert processed game links: {processed_links_insert_duration:.4f} seconds")
+            return {"status": "completed", "message": f"No valid FENs generated for user '{username}'. {len(user_game_links)} games marked as processed."}
+
+
+        # --- Insert/Update FENs into 'main_fen' table ---
+        print(f"\n--- Inserting/Updating {len(unique_generated_fens)} FENs into 'main_fen' ---")
+        start_main_fen_insert = time.time()
+        # Convert unique_generated_fens (list of strings) to required format for insert_fens
+        fens_for_main_fen_insert = [simplify_fen_and_extract_counters_for_insert(fen_str) for fen_str in unique_generated_fens]
+        await insert_fens(fens_for_main_fen_insert)
+        main_fen_insert_duration = time.time() - start_main_fen_insert
+        print(f"Time to insert/update FENs in 'main_fen': {main_fen_insert_duration:.4f} seconds")
+        print(f"System Metrics after Main FEN Insertion: {get_system_metrics()}")
+
+        # --- Insert game links into 'processed_game_links' table ---
+        print(f"\n--- Marking {len(user_game_links)} games as processed ---")
+        start_processed_links_insert = time.time()
+        links_for_processed_table = [(link,) for link in user_game_links]
+        await insert_processed_game_links(links_for_processed_table)
+        processed_links_insert_duration = time.time() - start_processed_links_insert
+        print(f"Time to insert processed game links: {processed_links_insert_duration:.4f} seconds")
+        print(f"System Metrics after Processed Links Insertion: {get_system_metrics()}")
+
+
+        # 3. Analyze the generated FENs in batches (now that they are in main_fen and games are marked processed)
+        print(f"\nStarting analysis of {len(unique_generated_fens)} FENs in batches using Lc0...")
+        total_analyzed_count = 0
+        total_errors_count = 0
+        
+        # Use a single engine instance for all batches within this function
+        engine_for_user_analysis = None
+        try:
+            engine_for_user_analysis = await initialize_lc0_engine()
+            analysis_semaphore = asyncio.Semaphore(1) # Semaphore to control concurrency to the single engine
+
+            for i in range(0, len(unique_generated_fens), batch_size):
+                fen_batch = unique_generated_fens[i:i + batch_size]
+                print(f"Analyzing batch {i//batch_size + 1}/{(len(unique_generated_fens) + batch_size - 1)//batch_size} ({len(fen_batch)} FENs)...")
+                
+                batch_tasks = []
+                for fen_str in fen_batch:
+                    # Pass the *same* engine instance to each analysis task
+                    task = analyze_single_position_with_semaphore(engine_for_user_analysis, fen_str, nodes_limit, analysis_semaphore)
+                    batch_tasks.append(task)
+                
+                batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+
+                for res in batch_results:
+                    if "error" in res:
+                        # Log error for individual FENs
+                        print(f"Error for FEN {res.get('fen', 'unknown')}: {res['error']}")
+                        total_errors_count += 1
+                    else:
+                        total_analyzed_count += 1
+            
+        except Exception as e:
+            print(f"An unexpected error occurred during batch analysis for user '{username}': {e}")
+            return {"status": "failed", "username": username, "error": str(e)}
+        finally:
+            if engine_for_user_analysis:
+                try:
+                    print("Quitting Lc0 engine after user game analysis...")
+                    await engine_for_user_analysis.quit()
+                    print("Lc0 engine quit.")
+                except Exception as quit_e:
+                    print(f"Error quitting Lc0 engine after user game analysis: {quit_e}. Attempting to force close transport.")
+                    if hasattr(engine_for_user_analysis, 'transport') and engine_for_user_analysis.transport:
+                        engine_for_user_analysis.transport.close()
+
+
+        print(f"\n--- FEN Analysis for User {username} Complete ---")
+        print(f"Total FENs generated: {len(unique_generated_fens)}")
+        print(f"Total FENs analyzed successfully: {total_analyzed_count}")
+        print(f"Total FENs with analysis errors: {total_errors_count}")
+        print(f"Final System Metrics: {get_system_metrics()}")
+        total_duration = time.time() - total_start_time
+        print(f"Total Analysis Duration for user '{username}': {total_duration:.4f} seconds")
+
+        return {
+            "status": "completed",
+            "username": username,
+            "total_games_found": len(user_game_links), # This is now NEW games found
+            "total_fens_generated": len(unique_generated_fens),
+            "total_fens_analyzed_successfully": total_analyzed_count,
+            "total_fens_with_errors": total_errors_count,
+            "duration_seconds": total_duration
+        }
+
+    except Exception as e:
+        print(f"An unexpected error occurred during analysis for user '{username}': {e}")
+        return {"status": "failed", "username": username, "error": str(e)}
+
+
+async def get_main_fen_non_single_game_objects() -> List[Dict[str, Any]]:
+    """
+    Fetches FEN objects from 'main_fen' table where 'n_games' is not equal to 1.
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries, where each dictionary represents
+                              a FEN object with 'fen', 'n_games', and 'moves_counter'.
+    """
+    sql_query = "SELECT fen, n_games, moves_counter FROM main_fen WHERE n_games > 2;" # Changed condition
+    # Use fetch_as_dict=True to get results as dictionaries directly
+    result = await open_async_request(sql_query, fetch_as_dict=True)
+    return result
