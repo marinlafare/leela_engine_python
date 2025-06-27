@@ -23,6 +23,30 @@ def read_root():
 
 app.include_router(fen.router)
 app.include_router(collect_fens.router)
+import os
+
+# CONSTANTS
+
+import os
+from dotenv import load_dotenv
+load_dotenv('this_is_not_an_env.env')
+USER=os.getenv("USER")
+PASSWORD=os.getenv("PASSWORD")
+HOST=os.getenv('HOST')
+PORT=os.getenv("PORT")
+DATABASE_NAME = os.getenv("DATABASE_NAME")
+CONN_STRING = os.getenv("CONN_STRING").replace('{user}',USER)
+CONN_STRING = CONN_STRING.replace('{host}',HOST)
+CONN_STRING = CONN_STRING.replace('{password}',PASSWORD)
+CONN_STRING = CONN_STRING.replace('{port}',PORT)
+CONN_STRING = CONN_STRING.replace('{database_name}',DATABASE_NAME)
+
+# LEELA_ENGINE_CONSTANTS
+
+LC0_PATH = os.getenv("LEELA_EXE")
+lc0_directory = os.path.dirname(LC0_PATH)
+LC0_WEIGHTS_FILE = os.getenv("WEIGHTS")
+
 #ROUTERS_FEN
 
 import asyncio
@@ -49,6 +73,7 @@ async def api_read_player_fen_analysis(fen: str):
     except Exception as e:
         print(f"Error in API endpoint for FEN {fen}: {e}")
         return JSONResponse(content={"error": f"Failed to analyze FEN: {e}"}, status_code=500)
+
 #ROUTERS_COLLECT_FENS
 
 import asyncio
@@ -66,7 +91,7 @@ async def api_read_player_fen_analysis(n_games: int):
     except Exception as e:
         print(f"Error in API endpoint for Collecting FENS : {e}")
         return JSONResponse(content={"error": f"Failed to analyze FEN: {e}"}, status_code=500)
-# OPERATIONS_FEN
+# OPERATIONS_FENS
 import os
 import chess
 import chess.engine
@@ -74,7 +99,7 @@ import asyncio
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 from database.operations.models import FenCreateData
 from database.database.db_interface import DBInterface
-from database.database.models import Fen, Knownfens
+from database.database.models import Fen, MainFen
 async def initialize_lc0_engine() -> chess.engine.UciProtocol:
     """
     Launches and configures the Leela Chess Zero (Lc0) engine.
@@ -166,38 +191,25 @@ async def analize_fen(fen: str) -> dict:
             print(f"Quitting Lc0 engine for FEN {fen}...")
             await engine.quit()
             print(f"Lc0 engine quit for FEN {fen}.")
-# OPERATIONS_MODELS
 
-from pydantic import BaseModel
-class FenCreateData(BaseModel):
-    fen: str
-    depth: int
-    seldepth: int
-    time: float
-    nodes: int
-    score: float
-    tbhits: int
-    nps: int
-class MainFenCreateData(BaseModel):
-    fen: int
-    n_games: int
-    moves_counter: str
 #OPERATIONS_COLLECT_FENS
 import time
 import chess
 from collections import defaultdict
+from typing import Any, Dict
+
 import asyncio
 from itertools import chain
 from fastapi import WebSocketDisconnect
 from database.operations.connection import Connection
 from database.database.ask_db import get_new_games_links, get_fens_from_games, get_new_fens, get_one_game,open_request
-from database.operations.models import KnownfensCreateData, RawfenCreateData
+from database.operations.models import MainFenCreateData
 from database.database.db_interface import DBInterface
-from database.database.models import Knownfens, Rawfen
+from database.database.models import MainFen, Fen
 
 
 # --- Helper function: Generates FENs for a single game's moves ---
-def _generate_fens_for_single_game_moves(moves: list[dict]) -> list[str]:
+def generate_fens_for_single_game_moves(moves: list[dict]) -> list[str]:
     """
     Generates a sequence of FENs for a single chess game given its moves.
 
@@ -211,16 +223,16 @@ def _generate_fens_for_single_game_moves(moves: list[dict]) -> list[str]:
                    Returns a partial list or an empty list if an invalid move is encountered,
                    along with a printed error message.
     """
-    board = chess.Board() # Initialize a standard chess board
+    board = chess.Board()
     fens_sequence = []
     
     for ind, move in enumerate(moves):
-        # Basic assertion to check move order consistency, can be removed if not critical
+        # Basic assertion to check move order consistency,
+        # There are some games that begin in a random move, we don't want those
         if move['n_move'] != ind + 1:
             print(f"Warning: n_move mismatch for move {move['n_move']} at index {ind}. Expected {ind + 1}. "
                   f"Processing might be out of order for this game.")
-            # Decide if you want to continue or stop here based on data integrity needs.
-            # For now, we continue but warn.
+            return False
             
         n_move = move['n_move']
         white_move_san = move.get('white_move') # Use .get() for safer access
@@ -308,8 +320,8 @@ def get_fens_from_games_optimized(new_game_links_data: list[tuple]) -> list[str]
     Returns:
         list[str]: A unique list of FEN strings generated from all processed games.
     """
-    all_fens = set() # Use a set for efficient storage of unique FENs
-    game_links_only = [x[0] for x in new_game_links_data] # Extract links from the input tuples
+    all_fens = set()
+    game_links_only = [x[0] for x in new_game_links_data]
 
     start_db_fetch = time.time()
     # Fetch all moves for all games in a single batched query
@@ -319,15 +331,14 @@ def get_fens_from_games_optimized(new_game_links_data: list[tuple]) -> list[str]
 
     total_fen_generation_time = 0
     games_processed = 0
-    # Process each game's moves to generate FENs
-    for game_link in game_links_only: # Iterate through the original list to ensure all links are attempted
+    
+    for game_link in game_links_only:
         game_moves = all_game_moves_grouped.get(game_link)
         
         if game_moves:
             fen_gen_start = time.time()
             try:
-                # Use the renamed helper function for single game FEN generation
-                game_fens = _generate_fens_for_single_game_moves(game_moves)
+                game_fens = generate_fens_for_single_game_moves(game_moves)
                 all_fens.update(game_fens) # Add FENs to the set
                 games_processed += 1
             except Exception as e: # Catch any unexpected errors during FEN generation
@@ -360,7 +371,7 @@ def get_new_fens(posible_fens: list[str]) -> list[str]:
     sql_query = """
     SELECT p_fen.f
     FROM UNNEST(%s::text[]) AS p_fen(f)
-    LEFT JOIN rawfen AS rf ON p_fen.f = rf.fen
+    LEFT JOIN main_fen AS rf ON p_fen.f = rf.fen
     WHERE rf.fen IS NULL;
     """
     
@@ -370,13 +381,13 @@ def get_new_fens(posible_fens: list[str]) -> list[str]:
     return valid_fens
 
 # --- Functions for Inserting Data (Adjusted for your DBInterface) ---
-def insert_fens(fens: list[str]):
+def insert_fens(fens_to_insert: Dict):
     """
     Inserts a list of new FENs into the rawfen table.
     """
     try:
-        to_insert_fens = [RawfenCreateData(**{'fen':x}).model_dump() for x in fens]
-        rawfen_interface = DBInterface(Rawfen) 
+        to_insert_fens = [MainFenCreateData(**fen_data).model_dump() for fen_data in fens_to_insert]
+        rawfen_interface = DBInterface(MainFen) 
         rawfen_interface.create_all(to_insert_fens)
         print(f"Successfully inserted {len(fens)} FENs.")
     except Exception as e:
@@ -419,465 +430,38 @@ async def collect_fens_operations(n_games):
     print('insert_games time elapsed: ', time.time() - start_insert_games)
     return f"{len(new_fens)} NEW FENS from {len(new_game_links)} NEW GAMES"
 
-#DATABASE_ASK_DB
-import os
-import requests
-import pandas as pd
-import tempfile
-import psycopg2
-from itertools import chain
-from constants import CONN_STRING, PORT
-
-def get_ask_connection():    
-    return psycopg2.connect(CONN_STRING, port = PORT)
-def get_one_game(link):
-    conn = get_ask_connection()
-    try:
-        with conn.cursor() as curs:
-            curs.execute(f"select moves.n_move, white_move, black_move from moves where moves.link = '{link}'")
-            column_names = [desc[0] for desc in curs.description]
-            results = []
-            for row in curs.fetchall():
-                results.append(dict(zip(column_names, row)))
-            return results
-    finally:
-        conn.close()
-def open_request_1(sql_question:str):
-    conn = get_ask_connection()
-    with conn.cursor() as curs:
-        curs.execute(
-            sql_question
-        )
-        result = curs.fetchall()
-    return result
-def open_request(sql_question: str, params: tuple = None, fetch_as_dict: bool = False):
-    conn = get_ask_connection()
-    try:
-        with conn.cursor() as curs:
-            if params:
-                curs.execute(sql_question, params)
-            else:
-                curs.execute(sql_question)
-            
-            if fetch_as_dict:
-                column_names = [desc[0] for desc in curs.description]
-                results = []
-                for row in curs.fetchall():
-                    results.append(dict(zip(column_names, row)))
-                return results
-            else:
-                return curs.fetchall()
-    finally:
-        conn.close()
-def get_all_tables():
-    conn = get_ask_connection()
-    conn.autocommit = True
-    with conn.cursor() as curs:
-        curs.execute(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-            AND table_type = 'BASE TABLE';
-            """
-        )
-        tables = curs.fetchall()
-    return tables
-def delete_all_leela_tables():
-    for table_row in ['fen','known_fens','rawfen','knownfens','fens_ready']:
-            conn = get_ask_connection()
-            conn.autocommit = True
-            table_name = table_row
-            print(f"Deleting table: {table_name}...")
-            try:
-                with conn.cursor() as curs:
-                    curs.execute(f"DROP TABLE IF EXISTS \"{table_name}\" CASCADE;")
-                    print(f"Successfully deleted table: {table_name}")
-            except Exception as e:
-                print(f"An unexpected error occurred: {e}")
-            finally:
-                if conn:
-                    conn.close()
-                    print("Database connection closed.")
-def get_new_games_links(n_games):
-    valid_links = open_request(f""" SELECT link
-                                    FROM game
-                                    WHERE link NOT IN (SELECT link FROM knownfens)
-                                    LIMIT {n_games};
-                                    """)
-    return valid_links
-    
-
-
-
-
-def get_fens_from_games(moves):
-    board = chess.Board() # Initialize a standard chess board
-    fens_sequence = []
-    for ind, move in enumerate(moves):
-        assert move['n_move'] == ind+1
-        n_move = move['n_move']
-        white_move_san = move['white_move']
-        black_move_san = move['black_move']
-        current_fens = {'n_move': n_move}
-        
-        try:
-            move_obj_white = board.parse_san(white_move_san)
-            board.push(move_obj_white)
-            fens_sequence.append(board.fen())
-        except ValueError as e:
-            print(f"Error applying White's move '{white_move_san}' at move number {n_move}: {e}")
-            return fens_sequence # Stop processing on error
-        except chess.InvalidMoveError as e:
-            print(f"Invalid White's move '{white_move_san}' at move number {n_move}: {e}")
-            return fens_sequence # Stop processing on error
-
-
-        # 2. Apply Black's move and get FEN
-        try:
-            move_obj_black = board.parse_san(black_move_san)
-            board.push(move_obj_black)
-            fens_sequence.append(board.fen())
-        except ValueError as e:
-            print(f"Error applying Black's move '{black_move_san}' at move number {n_move}: {e}")
-            return fens_sequence # Stop processing on error
-        except chess.InvalidMoveError as e:
-            print(f"Invalid Black's move '{black_move_san}' at move number {n_move}: {e}")
-            return fens_sequence # Stop processing on error
-
-        #fens_sequence.append(current_fens)
-    return fens_sequence
-
-
-def get_new_fens(posible_fens: list[str]) -> list[str]:
+def simplify_fen_and_extract_counters_for_insert(full_fen: str) -> tuple[str, str]:
     """
-    Filters a list of FENs, returning only those not already in the database.
-    This is highly efficient as the filtering is done by the database.
+    Takes a full FEN string, extracts the halfmove clock and fullmove number,
+    and returns the simplified FEN along with the extracted counters as a string.
 
     Args:
-        posible_fens (list[str]): A list of FEN strings to check for existence.
+        full_fen (str): The complete FEN string (e.g., 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1').
 
     Returns:
-        list[str]: A list of FEN strings from `posible_fens` that are not found
-                   in the 'fen' table. Returns an empty list if `posible_fens` is empty.
+        tuple[str, str]: A tuple containing:
+            - The simplified FEN string (without halfmove clock and fullmove number).
+            - A string containing the halfmove clock and fullmove number, separated by '#'.
+              Returns an empty string for counters if the FEN format is unexpected.
     """
-    if not posible_fens:
-        return [] # No FENs to check, return an empty list
+    parts = full_fen.split(' ')
 
-    sql_query = """
-    SELECT p_fen.f
-    FROM UNNEST(%s::text[]) AS p_fen(f)  -- 'p_fen' is an alias for the unnested array, 'f' is the column name
-    WHERE p_fen.f NOT IN (SELECT fen FROM rawfen); -- FIX IS HERE: Changed 'known_fens' to 'fen' and 'link' to 'fen'
-    """
-    
-    result_tuples = open_request(sql_query, params=(posible_fens,))
-    
-    valid_fens = list(chain.from_iterable(result_tuples))
-    
-    return valid_fens
-# def get_new_fens(posible_fens):
-#     in_db_fens = open_request(f"""
-#                                 SELECT fen.fen from fen;
-#                                 """)
-#     in_db_fens = set(in_db_fens)
-#     valid_fens = list(posible_fens - in_db_fens)
-#     return valid_fens
+    if len(parts) >= 4: # Ensure there are at least 4 parts (piece placement, active color, castling, en passant)
+        simplified_fen_parts = parts[0:4]
+        simplified_fen = ' '.join(simplified_fen_parts)
 
-# DATABASE_DB_INTERFACE
-from typing import Any
-import io
-from database.database.engine import DBSession
-from database.database.models import Base, to_dict
-from sqlalchemy import exists
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy import select
-from typing import Any, List, Dict
+        # Extract the last two parts if they exist
+        if len(parts) >= 6:
+            halfmove_clock = parts[4]
+            fullmove_number = parts[5]
+            extracted_counters = f"#{halfmove_clock}#{fullmove_number}#_"
+        else:
+            extracted_counters = "" # Or handle error/log if expecting these parts
+            print(f"Warning: FEN '{full_fen}' does not contain expected halfmove or fullmove numbers.")
+    else:
+        # Handle cases where the FEN is too short or malformed
+        simplified_fen = full_fen # Return original FEN if it's too short to parse meaningfully
+        extracted_counters = ""
+        print(f"Error: Malformed FEN string provided: '{full_fen}'. Expected at least 4 parts.")
 
-DataObject = Dict[str, Any]
-ListOfDataObjects = List[DataObject]
-
-class DBInterface:
-
-    def __init__(self, db_class: type[Base]):
-        self.db_class = db_class
-
-    def read_fen(self, fen: str) -> DataObject | None:
-        session: Session = DBSession()
-        try:
-            data: Base | None = session.get(self.db_class, fen)
-            if data is None:
-                return None
-            return to_dict(data)
-        finally:
-            session.close()
-
-    def create(self, data: DataObject) -> DataObject:
-        session: Session = DBSession()
-        try:
-            item: Base = self.db_class(**data)
-            session.add(item)
-            session.commit()
-            session.refresh(item)
-            result = to_dict(item)
-            return result
-        except Exception as e:
-            session.rollback()
-            print(f"Error creating single item: {e}")
-            raise
-        finally:
-            session.close()
-
-    def create_all(self, data: ListOfDataObjects) -> bool:
-        """
-        Inserts multiple records using bulk_insert_mappings.
-        """
-        if not data:
-            return "No DATA, are you joking? it's not funny"
-        session: Session = DBSession()
-        try:
-            session.bulk_insert_mappings(self.db_class, data)
-            session.commit()
-            return True
-        except Exception as e:
-            session.rollback()
-            print(f"Error during bulk insert for {self.db_class.__tablename__}: {e}")
-            raise
-        finally:
-            session.close()
-
-    def update(self, primary_key_value: Any, data: DataObject) -> DataObject | None:
-        session: Session = DBSession()
-        try:
-            item: Base | None = session.get(self.db_class, primary_key_value)
-            if item is None:
-                return None
-            for key, value in data.items():
-                if hasattr(item, key):
-                    setattr(item, key, value)
-            session.commit()
-            session.refresh(item)
-            return to_dict(item)
-        except Exception as e:
-            session.rollback()
-            print(f"Error updating item with key {primary_key_value}: {e}")
-            raise
-        finally:
-            session.close()
-
-    def delete(self, primary_key_value: Any) -> DataObject | None: # Made primary_key_value generic
-        session: Session = DBSession()
-        try:
-            item: Base | None = session.get(self.db_class, primary_key_value)
-            if item is None:
-                return None
-            result = to_dict(item)
-            session.delete(item)
-            session.commit()
-            return result
-        except Exception as e:
-            session.rollback()
-            print(f"Error deleting item with key {primary_key_value}: {e}")
-            raise
-        finally:
-            session.close()
-
-# Your to_dict function (assuming it's in models.py or accessible)
-# def to_dict(obj: Base) -> dict[str, Any]:
-#     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
-# DataObject = dict[str, Any]
-
-# class DBInterface:
-    
-#     def __init__(self, db_class: type[Base]):
-#         self.db_class = db_class
-
-#     def read_fen(self, fen: str)->DataObject:
-#         session = DBSession()
-#         data: Base = session.query(self.db_class).get(fen)
-#         session.close()
-#         if data == None:
-#             return None
-#         return to_dict(data)
-#     def create(self, data: DataObject) -> DataObject:
-#         session = DBSession()
-#         item: Base = self.db_class(**data)
-#         session.add(item)
-#         session.commit()
-#         result = to_dict(item)
-#         session.close()
-#         return result   
-
-#     def create_all(self, data: list[dict[str, Any]]) -> bool:
-#         session: Session = DBSession()
-#         try:
-#             # Get the underlying raw psycopg2 connection
-#             # This might vary slightly depending on your engine setup
-#             # For a basic setup, session.connection().connection is often the psycopg2 connection
-#             conn = session.connection().connection
-
-#             # Create a in-memory file-like object
-#             output = io.StringIO()
-            
-#             # Format data for COPY FROM: tab-separated values
-#             # Assuming 'data' elements are like {'fen': 'FEN_STRING'}
-#             # And 'rawfen' table has a 'fen' column
-#             for row_dict in data:
-#                 output.write(f"{row_dict['fen']}\n") # Write FEN and a newline
-#             output.seek(0) # Go to the beginning of the stream
-
-#             # Use psycopg2's copy_from method
-#             # table_name should be 'rawfen'
-#             # columns specifies the columns you are inserting into
-#             with conn.cursor() as cursor:
-#                 cursor.copy_from(output, self.db_class.__tablename__, columns=['fen']) # self.db_class.__tablename__ gets the table name
-
-#             session.commit() # Commit the transaction after copy
-#             return True
-#         except Exception as e:
-#             session.rollback()
-#             print(f"Error during psycopg2 copy_from: {e}")
-#             raise
-#         finally:
-#             session.close()
-
-#     # def create_all(self, data: list[dict[str, Any]]) -> bool: # Changed type hint for clarity
-#     #     session = DBSession()
-#     #     try:
-#     #         # 'data' is already a list of dictionaries, which is what bulk_insert_mappings expects
-#     #         # For the RawfenCreateData(**{'fen':x}).model_dump() conversion you have,
-#     #         # 'data' will be a list of {'fen': 'some_fen_string'} dictionaries.
-#     #         session.bulk_insert_mappings(self.db_class, data)
-#     #         session.commit()
-#     #         return True
-#     #     except Exception as e:
-#     #         session.rollback() # Important: rollback on error
-#     #         print(f"Error during bulk insert: {e}")
-#     #         raise # Re-raise to propagate the error
-#     #     finally:
-#     #         session.close()
-#     # def create_all(self, data: DataObject) -> DataObject:
-#     #     session = DBSession()
-#     #     item: Base = [self.db_class(**game) for game in data]
-#     #     session.add_all(item)
-#     #     session.commit()
-#     #     session.close()
-#     #     return True
-
-#     def update(self, player_name: str, data: DataObject) -> DataObject:
-#         session = DBSession()
-#         item: Base = session.query(self.db_class).get(player_name)
-#         for key, value in data.items():
-#             setattr(item, key, value)
-#         session.commit()
-#         session.close()
-#         return to_dict(item)
-#     def delete(self, player_name: str) -> DataObject:
-#         session = DBSession()
-#         item: Base = session.query(self.db_class).get(player_name)
-#         result = to_dict(item)
-#         session.delete(item)
-#         session.commit()
-#         session.close()
-#         return result
-
-# DATABASE_ENGINE
-
-from sqlalchemy.engine import create_engine
-from sqlalchemy.engine.base import Engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy_utils import database_exists, create_database
-from .models import Base
-
-engine: Engine = None
-DBSession = sessionmaker()
-
-def init_db(connection_string: str):
-    
-    url = connection_string
-    if not database_exists(url):
-        create_database(url)
-    engine = create_engine(url)
-    Base.metadata.create_all(bind=engine)
-    DBSession.configure(bind=engine)
-
-
-#DATABASE_MODELS
-
-from typing import Any
-from sqlalchemy import Column, ForeignKey, Integer, String, Float, BigInteger
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
-from sqlalchemy.types import Boolean
-Base = declarative_base()
-
-
-def to_dict(obj: Base) -> dict[str, Any]:
-    return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
-
-class MainFen(Base):
-    __tablename__ = "main_fen"
-    fen = Column(String, primary_key = True)
-    n_games = Column(BigInteger, nullable = False)
-    moves_counter = Column(String, nullable = False)
-    
-class Fen(Base):
-    __tablename__ = "fen"
-    fen = Column(String, primary_key=True)
-    depth = Column(Integer, nullable = False)
-    seldepth = Column(Integer, nullable = False)
-    time = Column(Float, nullable = False)
-    nodes = Column(Integer, nullable = False)
-    score = Column(Float, nullable = False)
-    tbhits = Column(Integer, nullable = False)
-    nps = Column(Integer, nullable = False)
-    
-
-#DATABASE_LEELA_ENGINE
-import os
-# import requests
-# import pandas as pd
-# import tempfile
-# import psycopg2
-# from itertools import chain
-
-import os
-import nest_asyncio
-import chess
-import chess.engine
-import asyncio
-
-from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
-
-#nest_asyncio.apply()
-async def initialize_lc0_engine() -> chess.engine.UciProtocol:
-    engine_uci = None
-    try:
-        print("...Starting Leela engine...")
-        transport, engine_uci = await chess.engine.popen_uci(LC0_PATH, cwd=lc0_directory)
-        await engine_uci.configure({
-                                    "WeightsFile": LC0_WEIGHTS_FILE,
-                                    "Backend": "cuda-fp16", 
-                                    "Threads": 1,
-                                    "MinibatchSize": 1024 
-                                })
-        print("...Leela engine ready...")
-        return engine_uci
-    except Exception as e:
-        print(f"Error initializing Lc0 engine: {e}")
-        if engine_uci:
-            await engine_uci.quit()
-        raise
-
-print('leela_engine', LC0_PATH)
-
-
-
-
-
-
-
-
-
-
-
-    
+    return {"fen":simplified_fen, "n_games": 1, "moves_counter":extracted_counters}

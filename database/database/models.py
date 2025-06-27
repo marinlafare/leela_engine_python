@@ -27,4 +27,6 @@ class Fen(Base):
     score = Column(Float, nullable = False)
     tbhits = Column(Integer, nullable = False)
     nps = Column(Integer, nullable = False)
-    
+class ProcessedGame(Base):
+    __tablename__ = "processed_game"
+    link = Column(BigInteger, primary_key=True, index=True)

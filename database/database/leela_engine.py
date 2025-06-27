@@ -1,20 +1,11 @@
 #DATABASE_LEELA_ENGINE
 import os
-# import requests
-# import pandas as pd
-# import tempfile
-# import psycopg2
-# from itertools import chain
-
-import os
-import nest_asyncio
 import chess
 import chess.engine
 import asyncio
 
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 
-#nest_asyncio.apply()
 async def initialize_lc0_engine() -> chess.engine.UciProtocol:
     engine_uci = None
     try:

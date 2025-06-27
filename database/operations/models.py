@@ -11,6 +11,8 @@ class FenCreateData(BaseModel):
     tbhits: int
     nps: int
 class MainFenCreateData(BaseModel):
-    fen: int
+    fen: str
     n_games: int
     moves_counter: str
+class ProcessedGameCreateData(BaseModel):
+    link: int

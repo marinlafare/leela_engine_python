@@ -1,7 +1,6 @@
+# CONSTANTS
+
 import os
-
-# ENV DATA
-
 from dotenv import load_dotenv
 load_dotenv('this_is_not_an_env.env')
 USER=os.getenv("USER")
@@ -15,7 +14,7 @@ CONN_STRING = CONN_STRING.replace('{password}',PASSWORD)
 CONN_STRING = CONN_STRING.replace('{port}',PORT)
 CONN_STRING = CONN_STRING.replace('{database_name}',DATABASE_NAME)
 
-# LEELA STUFF
+#LEELA_ENGINE_CONSTANTS
 
 LC0_PATH = os.getenv("LEELA_EXE")
 lc0_directory = os.path.dirname(LC0_PATH)
