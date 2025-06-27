@@ -14,7 +14,9 @@ import logging # Import logging module
 # Configure logging for chess.engine to suppress verbose tracebacks
 # This will prevent the InvalidMoveError traceback from appearing in the console
 # for errors originating within the chess.engine module itself.
-logging.getLogger("chess.engine").setLevel(logging.ERROR)
+logging.getLogger("chess.engine").setLevel(logging.ERROR) # Changed back to ERROR for better visibility of engine issues
+logging.getLogger("asyncio").setLevel(logging.ERROR) # Suppress asyncio internal logs only to ERROR, not CRITICAL
+# Removed: logging.getLogger().setLevel(logging.ERROR) to allow other module logs
 
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 from database.operations.models import FenCreateData
@@ -22,7 +24,7 @@ from database.database.db_interface import DBInterface # This now points to your
 from database.database.models import Fen, MainFen # Ensure Fen is imported
 from database.database.ask_db import open_async_request
 # Corrected Import: generate_fens_for_single_game_moves is in collect_fens.py
-from database.operations.collect_fens import generate_fens_for_single_game_moves, get_all_moves_for_links_batch, insert_fens, insert_processed_game_links, simplify_fen_and_extract_counters_for_insert
+from database.operations.collect_fens import generate_fens_for_single_game_moves,get_all_moves_for_links_batch, insert_fens, insert_processed_game_links, simplify_fen_and_extract_counters_for_insert
 
 
 async def initialize_lc0_engine() -> chess.engine.UciProtocol:
@@ -80,10 +82,13 @@ async def analyze_single_position(engine_uci: chess.engine.UciProtocol,
         A dictionary containing score in centipawns and principal variation and stuff.
     """
     board = chess.Board(fen)
+    
+    # Define a reasonable timeout for single FEN analysis to prevent hangs
+    # Adjust this value based on expected performance; 60 seconds is a starting point.
+    ANALYSIS_TIMEOUT_SECONDS = 90 
 
     try:
-        limit = chess.engine.Limit(nodes=nodes_limit)
-        # Wrap the core analysis call in a try-except to catch all potential engine errors
+        limit = chess.engine.Limit(nodes=nodes_limit, time=ANALYSIS_TIMEOUT_SECONDS) # Added time limit
         info = await engine_uci.analyse(board, limit=limit)
         
         # Ensure that score and pv are extracted safely
@@ -128,6 +133,8 @@ async def analyze_single_position(engine_uci: chess.engine.UciProtocol,
         
         return info
 
+    except chess.engine.Timeout: # Catch specific timeout error
+        return {"fen": fen, "error": f"Lc0 Analysis Timeout after {ANALYSIS_TIMEOUT_SECONDS} seconds."}
     except chess.engine.EngineError as e:
         # Check if the error message is specifically about invalid UCI moves
         if "invalid uci" in str(e).lower():
@@ -420,12 +427,12 @@ async def get_game_links_by_username(username: str, limit: int = 100) -> List[in
     # Extract just the link (which is the first and only element in each tuple)
     return [link[0] for link in result_tuples]
 
-async def analyze_user_games_fens(username: str, n_games: int = 100, batch_size: int = 100, nodes_limit: int = 50000) -> Dict[str, Any]:
+async def analyze_user_games_fens(username: str, n_games:int= 10,batch_size: int = 100, nodes_limit: int = 50000) -> Dict[str, Any]:
     """
     Fetches games played by a specific user, generates FENs for those games,
     and then analyzes these FENs using Lc0, storing results in the 'fen' table.
     Crucially, it now also inserts/updates FENs into 'main_fen' and marks
-    games as processed in 'processed_game' before analysis.
+    games as processed in 'processed_game_links' before analysis.
     The number of games fetched is limited by the 'batch_size' parameter.
 
     Args:
