@@ -37,17 +37,13 @@ async def open_async_request(sql_question: str, params: dict = None, fetch_as_di
             
             if fetch_as_dict:
                 rows = result.fetchall()
-                return [row._mapping for row in rows] # _mapping is for SQLAlchemy Row objects
+                return [row._mapping for row in rows]
             else:
                 return result.fetchall()
         except Exception as e:
             await session.rollback()
             logging.error(f"Error in open_async_request: {e}")
-            raise # Re-raise to propagate the error
-
-# Configure logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) # Set to INFO for less verbose output. Change to logging.DEBUG for more detail.
+            raise
 
 async def get_game_links_by_username(username: str, limit: int = 10) -> list[str]:
     """
@@ -73,7 +69,7 @@ async def get_game_links_by_username(username: str, limit: int = 10) -> list[str
             return []
 
         # --- OPTIMIZED FILTERING FOR PROCESSED GAMES ---
-        if all_fetched_links_list: # Only query if there are links to check
+        if all_fetched_links_list: 
             existing_processed_links_rows = await open_async_request(
                 """
                 SELECT link FROM processed_game WHERE link = ANY(:links_to_check);
@@ -106,9 +102,6 @@ async def get_all_moves_for_links_batch(game_links: list[str]) -> dict[str, list
 
     logger.info(f"Fetching moves for {len(game_links)} game links from the database...")
     
-    # SQL query to select the link and the moves data for the given game links
-    # Replace 'moves_json_or_text_field' with the actual column name in your 'game' table
-    # where the game moves are stored (e.g., as a JSON string or JSONB).
     game_moves_rows = await open_async_request(
         """
         SELECT link, n_move, white_move, black_move
@@ -129,80 +122,52 @@ async def get_all_moves_for_links_batch(game_links: list[str]) -> dict[str, list
     return moves_data_batch
 
 
-def generate_fens_for_single_game_moves(moves: list[dict]) -> list[tuple[str, dict]]:
-    """
-    Generates a sequence of FENs and initial empty counters dictionary for a single chess game
-    given its moves. Includes validation for the resulting FENs.
-    Returns an empty list if an invalid move or FEN is encountered.
-
-    Args:
-        moves (list[dict]): A list of dictionaries, where each dictionary represents
-                            a move with keys 'n_move', 'white_move', 'black_move'.
-
-    Returns:
-        list[tuple[str, dict]]: A list of (FEN string, empty dictionary) tuples
-                                representing the board state after each half-move.
-                                Returns an empty list if an invalid move or malformed FEN is found.
-    """
-    board = chess.Board()
+async def generate_fens_for_single_game_moves(moves_data_batch: dict[int]) -> list[tuple[str, dict]]:
+    simplify = simplify_fen_and_extract_counters_for_insert
+    
+    precessed_games_data = dict()
     fens_sequence_with_counters = []
+    
+    
+    for link in moves_data_batch.keys():
+        one_game_moves = moves_data_batch[link]
+        precessed_games_data[link] = []
+        board = chess.Board()
+        for ind, move_data in enumerate(one_game_moves):
+            expected_move_num = ind + 1
+            current_move_num = move_data.get('n_move')
+            if not expected_move_num == current_move_num:
+                precessed_games_data[link].append({'n_move':ind+1,'fen':'IrregularIndexing'})
+                precessed_games_data[link].append({'n_move':ind+1.5,'fen':'IrregularIndexing'})
+                fens_sequence_with_counters.append(None)
+                continue
+                
+            n_move = current_move_num
+            white_move_san = move_data.get('white_move')
+            black_move_san = move_data.get('black_move')
+            
+            move_obj_white = board.parse_san(white_move_san)
+            board.push(move_obj_white)
+            current_fen = board.fen()
+            
+            _ = chess.Board(current_fen)
+            fen_to_insert = simplify(current_fen)
+            precessed_games_data[link].append({'n_move':ind+1,'fen':fen_to_insert.fen})
+            fens_sequence_with_counters.append(fen_to_insert)
+            
+            move_obj_black = board.parse_san(black_move_san)
+            board.push(move_obj_black)
+            current_fen = board.fen()
 
-    for ind, key in enumerate(moves.keys()):
-        move = moves[key]
-        expected_move_num = ind + 1
-        current_move_num = move.get('n_move')
-        # Robustness checks for move data integrity
-        if current_move_num is None:
-            logger.debug(f"Skipping game (move missing 'n_move' key): {move}")
-            return []
-        if current_move_num != expected_move_num:
-            logger.debug(f"Skipping game (inconsistent move order): Expected n_move {expected_move_num}, got {current_move_num} for move {move}")
-            return []
-
-        n_move = current_move_num
-        white_move_san = move.get('white_move')
-        black_move_san = move.get('black_move')
-
-        # Process White's move
-        if white_move_san:
-            try:
-                move_obj_white = board.parse_san(white_move_san)
-                board.push(move_obj_white)
-                current_fen = board.fen()
-                try:
-                    # Validate the generated FEN
-                    _ = chess.Board(current_fen)
-                    fens_sequence_with_counters.append((current_fen, {}))
-                    logger.debug(f"Generated FEN (White, Move {n_move}): {current_fen}")
-                except ValueError as e:
-                    logger.debug(f"Invalid FEN generated (White, Move {n_move}): {current_fen} - Error: {e}")
-                    return []
-            except (ValueError, chess.InvalidMoveError) as e:
-                logger.debug(f"Error applying White's move '{white_move_san}' at move number {n_move}: {e}")
-                return []
-
-        # Process Black's move (only if black_move exists and white's move was successful)
-        if black_move_san:
-            try:
-                move_obj_black = board.parse_san(black_move_san)
-                board.push(move_obj_black)
-                current_fen = board.fen()
-                try:
-                    # Validate the generated FEN
-                    _ = chess.Board(current_fen)
-                    fens_sequence_with_counters.append((current_fen, {}))
-                    logger.debug(f"Generated FEN (Black, Move {n_move}): {current_fen}")
-                except ValueError as e:
-                    logger.debug(f"Invalid FEN generated (Black, Move {n_move}): {current_fen} - Error: {e}")
-                    return []
-            except (ValueError, chess.InvalidMoveError) as e:
-                logger.debug(f"Error applying Black's move '{black_move_san}' at move number {n_move}: {e}")
-                return []
-
-    return fens_sequence_with_counters
+            _ = chess.Board(current_fen)
+            fen_to_insert = simplify(current_fen)
+            precessed_games_data[link].append({'n_move':ind+1.5,'fen':fen_to_insert.fen})
+            fens_sequence_with_counters.append(fen_to_insert)
+    
+    return precessed_games_data, [x for x in fens_sequence_with_counters if x!=None]
 
 
-def simplify_fen_and_extract_counters_for_insert(raw_fen: str, initial_counters: dict) -> MainFenCreateData:
+def simplify_fen_and_extract_counters_for_insert(raw_fen: str) -> MainFenCreateData:
     """
     Simplifies a FEN string by removing move counters and fullmove number,
     and prepares data for MainFen insertion.
@@ -219,20 +184,11 @@ def simplify_fen_and_extract_counters_for_insert(raw_fen: str, initial_counters:
     return MainFenCreateData(
         fen=simplified_fen,
         n_games=1,
-        moves_counter=1
+        moves_counter=f"#{parts[4]}#{parts[5]}_"
     )
 
+async def insert_to_main_fens(all_raw_fens_with_counters: list[tuple[str, dict]]):
 
-async def insert_fens(all_raw_fens_with_counters: list[tuple[str, dict]]):
-    """
-    Inserts or updates FENs in the 'main_fen' table.
-    It aggregates multiple occurrences of the same FEN from the current batch
-    and then performs a bulk upsert (insert or update).
-    
-    Args:
-        all_raw_fens_with_counters (list[tuple[str, dict]]): A list of (raw_fen, empty_dict) tuples
-                                                    from `generate_fens_for_single_game_moves`.
-    """
     main_fen_db_interface = DBInterface(MainFen)
 
     aggregated_fens_for_batch = {}
@@ -301,114 +257,41 @@ async def insert_processed_game_links(processed_game_links: list[str]):
         logger.error(f"Error inserting processed game links: {e}", exc_info=True)
 
 
-async def get_fens_from_games_optimized(game_links: list[str]) -> list[tuple[str, dict]]:
-    """
-    Processes a list of game links, fetches their moves, and generates a list of
-    (FEN, counters_dict) tuples. This is a batch-oriented function.
-    """
+async def get_fens_to_insert(game_links: list[str]) -> list[tuple[str, dict]]:
     all_fens_with_counters = []
-    
-    # 1. Get moves for the batch of game links
     moves_data_batch = await get_all_moves_for_links_batch(game_links)
-    logger.info(f"Retrieved moves for {len(moves_data_batch)} games.")
-    
-    # 2. Generate FENs for each game in the batch
-    for game_link, moves in moves_data_batch.items():
-        if not moves:
-            logger.warning(f"Skipping FEN generation for {game_link} as no moves were found.")
-            continue
-        
-        game_fens_with_counters = generate_fens_for_single_game_moves(moves)
-        if game_fens_with_counters:
-            all_fens_with_counters.extend(game_fens_with_counters)
-        else:
-            logger.warning(f"No valid FENs generated for game {game_link} due to invalid moves or FENs (check debug logs).")
-            
-    return all_fens_with_counters
+    precessed_games_data, fens_sequence_with_counters = generate_fens_for_single_game_moves(moves)
+
+    return precessed_games_data, fens_sequence_with_counters
 
 
-async def get_new_fens(all_generated_fens_with_counters: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
-    """
-    Filters a list of generated FENs, returning only those that do not
-    already exist in the 'main_fen' table.
-    """
-    if not all_generated_fens_with_counters:
-        logger.info("No FENs generated to check for newness.")
-        return []
+async def get_new_fens(fens_sequence_with_counters: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
 
-    # Extract simplified FEN strings for database lookup (only need the FEN string for comparison)
-    simplified_fens_generated = {
-        simplify_fen_and_extract_counters_for_insert(fen_tuple[0], {}).fen
-        for fen_tuple in all_generated_fens_with_counters
-    }
-
-    if not simplified_fens_generated:
-        logger.info("No unique simplified FENs to check against the database.")
-        return []
-
-    # Query the database for existing FENs
+    current_fens = {item.fen for item in fens_sequence_with_counters}
     existing_fens_in_db_rows = await open_async_request(
         """
         SELECT fen FROM main_fen WHERE fen = ANY(:fens);
         """,
-        params={"fens": list(simplified_fens_generated)}
+        params={"fens": list(current_fens)}
     )
     existing_fens_set = {row[0] for row in existing_fens_in_db_rows}
-
-    # Filter out FENs that already exist in the database, preserving the original tuple structure
-    new_fens_filtered = []
-    for fen_tuple in all_generated_fens_with_counters:
-        fen_str = fen_tuple[0]
-        simplified_fen = simplify_fen_and_extract_counters_for_insert(fen_str, {}).fen
-        if simplified_fen not in existing_fens_set:
-            new_fens_filtered.append(fen_tuple)
-            
-    logger.info(f"Found {len(new_fens_filtered)} truly new FENs out of {len(all_generated_fens_with_counters)} generated.")
-    return new_fens_filtered
-
+    valid_fens = list(current_fens - existing_fens_set)
+    fens_to_insert = [x for x in fens_sequence_with_counters if x.fen in valid_fens]
+    fens_to_update = existing_fens_set
+    return fens_to_insert, fens_to_update
+def insert_fens():
+    pass
 
 async def collect_fens_operations(n_games: int, username: str = 'lafareto') -> Dict[str, Any]:
-    """
-    Orchestrates the collection of FENs from new games for a specific user,
-    and inserts them into the 'main_fen' table.
-    Does NOT perform analysis with Lc0.
-    
-    Args:
-        n_games (int): The number of new games to attempt to process.
-        username (str): The username for whom to collect games.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing status and summary information.
-    """
-    logger.info(f"\n--- Starting FEN Collection Operations for User: {username} ---")
-    start_total_process = time.time()
-
-    # 1. Get new game links
-    game_links_start_time = time.time()
     new_game_links = await get_game_links_by_username(username, n_games)
-    game_links_end_time = time.time()
-    logger.info(f"Time to fetch {len(new_game_links)} NEW game links: {game_links_end_time - game_links_start_time:.4f} seconds")
-
     if not new_game_links:
-        logger.info("No new game links found to collect FENs from. Exiting collection process.")
         return {"status": "no_new_games", "fens_collected": 0, "games_processed": 0, "duration_seconds": 0.0}
-
-    # 2. Get FENs from games
-    start_fens_gen = time.time()
-    all_fens_with_counters_from_new_games = await get_fens_from_games_optimized(new_game_links)
-    end_fens_gen = time.time()
-    logger.info(f"Generated {len(all_fens_with_counters_from_new_games)} FENs from {len(new_game_links)} games in {end_fens_gen - start_fens_gen:.4f} seconds.")
-
-    # 3. Filter for truly new FENs (not already in main_fen)
-    start_new_fens_check = time.time()
-    new_fens_to_insert = await get_new_fens(all_fens_with_counters_from_new_games)
-    end_new_fens_check = time.time()
-    logger.info(f"Identified {len(new_fens_to_insert)} truly new FENs to insert in {end_new_fens_check - start_new_fens_check:.4f} seconds.")
-
-    # 4. Insert/Update new FENs into the 'main_fen' table
-    logger.info(f"\n--- Inserting {len(new_fens_to_insert)} FENs into the database (main_fen) ---")
-    start_insert_fens = time.time()
-    await insert_fens(new_fens_to_insert) # This handles aggregation and upsert
+    moves_data_batch = await get_all_moves_for_links_batch(new_games)
+    precessed_games_data, fens_sequence_with_counters = await generate_fens_for_single_game_moves(moves_data_batch)
+    if len(fens_sequence_with_counters) == 0:
+        return {"status": "process fens failed", "fens_collected": 0, "games_processed": 0, "duration_seconds": 0.0}
+    
+    await insert_to_main_fens(fens_sequence_with_counters)
     end_insert_fens = time.time()
     logger.info(f"FEN insertion/update to main_fen time elapsed: {end_insert_fens - start_insert_fens:.4f} seconds")
 

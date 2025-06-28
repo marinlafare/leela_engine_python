@@ -65,7 +65,7 @@ async def delete_all_leela_tables():
     Note: DDL operations like DROP TABLE automatically commit.
     """
     async with AsyncDBSession() as session:
-        for table_name_to_delete in ['fen','main_fen','processed_game']:
+        for table_name_to_delete in ['fen','main_fen','processed_game','game_fen']:
             print(f"Deleting table: {table_name_to_delete}...")
             try:
                 # Use text() for DDL commands
