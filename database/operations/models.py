@@ -16,6 +16,7 @@ class MainFenCreateData(BaseModel):
     moves_counter: str
 class ProcessedGameCreateData(BaseModel):
     link: int
+    analyzed: bool
 class GameFenCreateData(BaseModel):
     link: int
     n_move: int

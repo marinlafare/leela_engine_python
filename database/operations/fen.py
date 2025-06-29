@@ -18,7 +18,9 @@ from database.operations.models import FenCreateData
 from database.database.db_interface import DBInterface
 from database.database.models import Fen, MainFen, ProcessedGame
 from database.database.ask_db import open_async_request, get_game_links_by_username
-from database.operations.collect_data import generate_fens_for_single_game_moves, get_all_moves_for_links_batch, insert_fens, insert_processed_game_links, simplify_fen_and_extract_counters_for_insert
+# from database.operations.collect_data import (generate_fens_for_single_game_moves,
+#                                                 get_all_moves_for_links_batch,
+#                                                 insert_processed_game_links, simplify_fen_and_extract_counters_for_insert)
 
 
 async def initialize_lc0_engine() -> chess.engine.UciProtocol:
@@ -52,7 +54,7 @@ async def analyze_single_position(engine: chess.engine.UciProtocol, fen: str, n_
     """
     Analyzes a single chess position (FEN) using the provided Leela engine.
     Returns analysis data or a default "failed" entry if analysis fails.
-    """ (time=time_limit, nodes=n_nodes_limit)
+    """ 
     try:
         board = chess.Board(fen)
         info = await engine.analyse(board, chess.engine.Limit(time=time_limit,nodes=n_nodes_limit))
