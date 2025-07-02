@@ -16,7 +16,7 @@ from database.database.engine import AsyncDBSession
 import math
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 from database.database.db_interface import DBInterface
-from database.database.models import Fen, MainFen, ProcessedGame,GameFen
+from database.database.models import Fen, MainFen, ProcessedGame#,GameFen
 from database.database.ask_db import open_async_request
 from database.operations.models import FenCreateData, MainFenCreateData, ProcessedGameCreateData,GameFenCreateData
 
@@ -291,65 +291,7 @@ def simplify_fen_and_extract_counters_for_insert(raw_fen: str) -> MainFenCreateD
         moves_counter=f"#{parts[4]}#{parts[5]}_"
     )
 
-# async def insert_to_main_fens(all_raw_fens_with_counters: list[tuple[str, dict]]):
 
-#     main_fen_db_interface = DBInterface(MainFen)
-
-    
-
-#     data_for_upsert = []
-#     for simplified_fen, counts in aggregated_fens_for_batch.items():
-#         data_for_upsert.append(MainFenCreateData(
-#             fen=simplified_fen,
-#             n_games=counts['n_games'],
-#             moves_counter=counts['moves_counter']
-#         ).model_dump()) # Convert Pydantic model to dict for bulk insert
-
-#     if data_for_upsert:
-#         try:
-#             # Use DBInterface's create_all which now handles MainFen upsert
-#             success = await main_fen_db_interface.create_all(data_for_upsert)
-#             if success:
-#                 print(f"Successfully processed (inserted/updated) {len(data_for_upsert)} unique FENs in 'main_fen'.")
-#             else:
-#                 print(f"Failed to process FENs in 'main_fen' for this batch.")
-#         except Exception as e:
-#             print(f"Error during bulk upsert of FENs into 'main_fen': {e}", exc_info=True)
-#     else:
-#         print("No FENs to insert/update in 'main_fen' for this batch.")
-
-
-# async def insert_processed_game_links(processed_game_links: list[str]):
-#     """
-#     Inserts processed game links into the 'processed_game' table.
-#     Expects a list of game link strings.
-#     """
-#     if not processed_game_links:
-#         print("No processed game links to insert.")
-#         return
-
-#     processed_game_db_interface = DBInterface(ProcessedGame)
-#     # Convert list of strings to list of Pydantic models (then to dict for insertion)
-#     data_to_insert = [ProcessedGameCreateData(link=link).model_dump()
-#                       for link in processed_game_links]
-
-#     try:
-#         # DBInterface.create_all for ProcessedGame now handles ON CONFLICT DO NOTHING
-#         success = await processed_game_db_interface.create_all(data_to_insert)
-#         if success:
-#             print(f"Successfully inserted {len(data_to_insert)} game links into processed_game.")
-#         else:
-#             print(f"Failed to insert processed game links for {len(data_to_insert)} games.")
-#     except Exception as e:
-#         print(f"Error inserting processed game links: {e}", exc_info=True)
-
-
-# async def get_fens_to_insert(game_links: list[str]) -> list[tuple[str, dict]]:
-#     all_fens_with_counters = []
-#     moves_data_batch = await get_all_moves_for_links_batch(game_links)
-#     precessed_games_data, fens_sequence_with_counters = generate_fens_for_single_game_moves(moves)
-
-#     return precessed_games_data, fens_sequence_with_counters
 
 
 async def get_new_fens(fens_sequence_with_counters: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
@@ -369,30 +311,7 @@ async def get_new_fens(fens_sequence_with_counters: list[tuple[str, dict]]) -> l
     fens_to_update = [x.model_dump() for x in fens_to_update]
     
     return fens_to_insert, fens_to_update
-# async def insert_processed_games(
-#     game_data_list: List[ProcessedGameCreateData]
-# ) -> bool:
-#     processed_game_db = DBInterface(ProcessedGame)
 
-#     # Convert the list of Pydantic models to a list of dictionaries
-#     # SQLAlchemy's .values() and .bulk_insert_mappings() expect dictionaries
-#     data_to_insert: List[Dict[str, Any]] = [
-#         game_data.model_dump() for game_data in game_data_list
-#     ]
-
-#     try:
-#         # Use the existing create_all method for bulk insertion.
-#         # It has an ON CONFLICT DO NOTHING for 'link', which is suitable
-#         # for preventing duplicate insertions based on the game link.
-#         success = await processed_game_db.create_all(data_to_insert)
-#         if success:
-#             print(f"Successfully inserted {len(data_to_insert)} ProcessedGame records.")
-#         else:
-#             print("Failed to insert ProcessedGame records.")
-#         return success
-#     except Exception as e:
-#         print(f"An error occurred during ProcessedGame insertion: {e}")
-#         return False
 async def db_info():
     async def all_main_fens() -> str:
         """
@@ -413,15 +332,15 @@ async def db_info():
         result = await open_async_request(sql_query)
         count = result[0][0] if result else 0
         return f"PROCESSED {count:,}"
-    async def moves_for_games() -> str:
-        sql_query = "SELECT COUNT(link) FROM game_fen;"
-        result = await open_async_request(sql_query)
-        count = result[0][0] if result else 0
-        return f"MOVES {count:,}"
+    # async def moves_for_games() -> str:
+    #     sql_query = "SELECT COUNT(link) FROM game_fen;"
+    #     result = await open_async_request(sql_query)
+    #     count = result[0][0] if result else 0
+    #     return f"MOVES {count:,}"
     print(await all_main_fens())
     print(await all_fens())
     print(await games_processed())
-    print(await moves_for_games())
+    #print(await moves_for_games())
 def divide_into_batches(
                         fens_list_1: List[dict],
                         fens_list_2: List[dict],
@@ -505,43 +424,3 @@ async def collect_fens_from_player(player_name: str) -> str:
     print('DB FINAL mesurements: ')
     await db_info()
     return 'DONEEEEEEEEEEEEEEEEE'
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    # await insert_to_main_fens(fens_sequence_with_counters)
-    # end_insert_fens = time.time()
-    # print(f"FEN insertion/update to main_fen time elapsed: {end_insert_fens - start_insert_fens:.4f} seconds")
-
-    # # 5. Mark game links as processed
-    # print(f"\n--- Marking {len(new_game_links)} game links as processed ---")
-    # start_insert_games = time.time()
-    # await insert_processed_game_links(new_game_links)
-    # end_insert_games = time.time()
-    # print(f"Processed game links insertion time elapsed: {end_insert_games - start_insert_games:.4f} seconds")
-
-    # end_total_process = time.time()
-    # total_duration = end_total_process - start_total_process
-
-    # response_message = (
-    #     f"{len(new_fens_to_insert)} NEW FENS from {len(new_game_links)} NEW GAMES "
-    #     f"processed in {total_duration:.4f} seconds."
-    # )
-    # print(f"--- FEN Collection Operations Complete for User: {username} ---")
-    # print(response_message)
-    
-    # return {
-    #     "status": "completed",
-    #     "fens_collected": len(new_fens_to_insert),
-    #     "games_processed": len(new_game_links),
-    #     "duration_seconds": total_duration,
-    #     "message": response_message
-    # }

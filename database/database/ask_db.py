@@ -13,7 +13,9 @@ from database.database.engine import AsyncDBSession # For getting async sessions
 from database.database.models import MainFen, Fen, ProcessedGame # Import models if you plan to use ORM for these
 
 
-async def open_async_request(sql_question: str, params: dict = None, fetch_as_dict: bool = False):
+async def open_async_request(sql_question: str,
+                             params: dict = None,
+                             fetch_as_dict: bool = False):
     """
     Executes an asynchronous SQL query, optionally with parameters, and fetches results.
     Uses AsyncDBSession for connection management.

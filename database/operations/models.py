@@ -1,23 +1,11 @@
 # OPERATIONS_MODELS
 
 from pydantic import BaseModel
+
 class FenCreateData(BaseModel):
-    fen: str
-    depth: int
-    seldepth: int
-    time: float
-    nodes: int
-    score: float
-    tbhits: int
-    nps: int
-class MainFenCreateData(BaseModel):
     fen: str
     n_games: int
     moves_counter: str
+    score: float = None
 class ProcessedGameCreateData(BaseModel):
     link: int
-    analyzed: bool
-class GameFenCreateData(BaseModel):
-    link: int
-    n_move: int
-    fen: str
