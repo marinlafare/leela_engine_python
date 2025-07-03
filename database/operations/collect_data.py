@@ -16,9 +16,9 @@ from database.database.engine import AsyncDBSession
 import math
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 from database.database.db_interface import DBInterface
-from database.database.models import Fen, MainFen, ProcessedGame#,GameFen
+from database.database.models import Fen, FromGame
 from database.database.ask_db import open_async_request
-from database.operations.models import FenCreateData, MainFenCreateData, ProcessedGameCreateData,GameFenCreateData
+from database.operations.models import FenCreateData, FromGameCreateData
 
 max_workers = 1
 
@@ -97,18 +97,18 @@ async def get_all_moves_for_links_batch(game_links: list[str]) -> dict[str, list
         FROM moves
         WHERE link = ANY(:game_links);
         """,
-        params={"game_links": game_links}
+        params={"game_links": game_links}, fetch_as_dict = True
     )
 
-    for link, n_move, white_move, black_move in game_moves_rows:
-        moves_data_batch[link].append({
-            'n_move': n_move,
-            'white_move': white_move,
-            'black_move': black_move
-        })
+    # for link, n_move, white_move, black_move in game_moves_rows:
+    #     moves_data_batch[link].append({
+    #         'n_move': n_move,
+    #         'white_move': white_move,
+    #         'black_move': black_move
+    #     })
 
     print(f"Finished fetching and structuring moves for {len(moves_data_batch)} games.")
-    return moves_data_batch
+    return game_moves_rows
 async def insert_processed_games_data(processed_games_move_data):
     for ind, chunk in enumerate(processed_games_move_data):
         processed_game_moves_db = DBInterface(GameFen)
@@ -271,7 +271,7 @@ async def generate_fens_for_single_game_moves(moves_data_batch: dict[str, list])
     return processed_games_data, final_fens_sequence
 
 
-def simplify_fen_and_extract_counters_for_insert(raw_fen: str) -> MainFenCreateData:
+def simplify_fen_and_extract_counters_for_insert(raw_fen: str) -> FenCreateData:
     """
     Simplifies a FEN string by removing move counters and fullmove number,
     and prepares data for MainFen insertion.

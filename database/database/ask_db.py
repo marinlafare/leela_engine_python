@@ -5,13 +5,12 @@ import pandas as pd
 import tempfile
 from itertools import chain
 from typing import List, Dict, Any
-from constants import CONN_STRING # CONN_STRING should now be 'postgresql+asyncpg://'
+from constants import CONN_STRING
 
-# Import necessary SQLAlchemy async components
-from sqlalchemy import text, select # For executing raw SQL or ORM selects asynchronously
-from database.database.engine import AsyncDBSession # For getting async sessions
-from database.database.models import MainFen, Fen, ProcessedGame # Import models if you plan to use ORM for these
 
+from sqlalchemy import text, select
+from database.database.engine import AsyncDBSession
+from database.database.models import Fen, FromGame
 
 async def open_async_request(sql_question: str,
                              params: dict = None,

@@ -4,7 +4,7 @@ from sqlalchemy import select, insert, Integer, func # Import func
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.database.engine import AsyncDBSession
-from database.database.models import Base, Fen, MainFen, ProcessedGame, to_dict
+from database.database.models import Base, Fen, FromGame, to_dict
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from datetime import datetime, timezone
 
@@ -32,7 +32,6 @@ class DBInterface:
                 return result
             except Exception as e:
                 await session.rollback()
-                print(f"Error creating single item for {self.db_class.__tablename__}: {e}")
                 raise
 
     async def read(self, **filters) -> ListOfDataObjects:
@@ -46,7 +45,6 @@ class DBInterface:
                 result = await session.execute(stmt)
                 return [to_dict(row) for row in result.scalars().all()]
             except Exception as e:
-                print(f"Error reading from {self.db_class.__tablename__} with filters {filters}: {e}")
                 raise
 
     async def update(self, primary_key_value: Any, data: DataObject) -> DataObject | None:
@@ -66,7 +64,6 @@ class DBInterface:
                 return to_dict(item)
             except Exception as e:
                 await session.rollback()
-                print(f"Error updating item {primary_key_value} for {self.db_class.__tablename__}: {e}")
                 raise
 
     async def delete(self, primary_key_value: Any) -> DataObject | None:
@@ -84,7 +81,6 @@ class DBInterface:
                 return result
             except Exception as e:
                 await session.rollback()
-                print(f"Error deleting item {primary_key_value} for {self.db_class.__tablename__}: {e}")
                 raise
 
     def get_session(self):
@@ -98,17 +94,14 @@ class DBInterface:
         **This method will now chunk inserts to avoid parameter limits.**
         """
         if not data:
-            print(f"No data provided for bulk insert into {self.db_class.__tablename__}.")
             return True
 
         # Determine the number of parameters per row for chunking
         params_per_row = 0
-        if self.db_class == Fen:
+        if self.db_class == FromGame:
             params_per_row = 1 # 'fen'
-        elif self.db_class == MainFen:
-            params_per_row = 3 # 'fen', 'n_games', 'moves_counter'
-        elif self.db_class == ProcessedGame:
-            params_per_row = 2 # 'link', 'analyzed'
+        elif self.db_class == Fen:
+            params_per_row = 5 # 'fen', 'n_games', 'moves_counter', 'score', 'next_moves'
         else: # For generic bulk_insert_mappings, assume average number of columns or use a default safe limit
             params_per_row = len(self.db_class.__table__.columns) if hasattr(self.db_class, '__table__') else 3
 
@@ -130,23 +123,22 @@ class DBInterface:
                     if not chunk:
                         continue
 
-                    if self.db_class == Fen:
+                    if self.db_class == FromGame:
                         stmt = pg_insert(self.db_class).values(chunk).on_conflict_do_nothing(
-                            index_elements=[self.db_class.fen]
+                            index_elements=[self.db_class.link]
                         )
-                    elif self.db_class == MainFen:
+                    elif self.db_class == Fen:
                         stmt = pg_insert(self.db_class).values(chunk).on_conflict_do_update(
                             index_elements=[self.db_class.fen],
                             set_={
                                 'n_games': (self.db_class.n_games.cast(Integer) + pg_insert(self.db_class).excluded.n_games.cast(Integer)),
                                 'moves_counter': pg_insert(self.db_class).excluded.moves_counter,
-                                'last_updated': datetime.now(timezone.utc)
+                                'next_moves': None,
+                                'score': None
+                                
                             }
                         )
-                    elif self.db_class == ProcessedGame:
-                        stmt = pg_insert(self.db_class).values(chunk).on_conflict_do_nothing(
-                            index_elements=[self.db_class.link]
-                        )
+
                     else:
                         # For generic bulk_insert_mappings, it's generally better to pass the full list
                         # and let SQLAlchemy handle its internal chunking for efficiency,
@@ -159,18 +151,15 @@ class DBInterface:
                         # because bulk_insert_mappings doesn't participate in the session's transaction
                         # in the same way as session.execute with pg_insert.
                         await session.commit()
-                        #print(f"Inserted chunk {i+1}/{len(chunks)} for {self.db_class.__tablename__} using bulk_insert_mappings.")
                         continue # Skip the session.execute for bulk_insert_mappings
 
                     await session.execute(stmt)
-                    #print(f"Inserted chunk {i+1}/{len(chunks)} of size {len(chunk)} for {self.db_class.__tablename__} using pg_insert.")
 
                 # Final commit for all pg_insert chunks within this method
                 await session.commit()
                 return True
             except Exception as e:
                 await session.rollback()
-                print(f"Error during bulk insert/upsert for {self.db_class.__tablename__}: {e}")
                 raise
 
     async def upsert_main_fens(self,
@@ -190,25 +179,23 @@ class DBInterface:
                                and 'existing_moves_counter' (the moves_counter from the DB).
         """
         if not objects_to_insert and not objects_to_update:
-            print("No data provided for MainFen upsert (both lists are empty).")
             return True
 
         async with AsyncDBSession() as session:
             try:
                 # --- Process Inserts ---
                 if objects_to_insert:
-                    insert_stmt = pg_insert(MainFen).values(objects_to_insert).on_conflict_do_nothing(
-                        index_elements=[MainFen.fen]
+                    insert_stmt = pg_insert(Fen).values(objects_to_insert).on_conflict_do_nothing(
+                        index_elements=[Fen.fen]
                     )
                     await session.execute(insert_stmt)
-                    #print(f"Inserted {len(objects_to_insert)} new MainFen records.")
 
                 # --- Process Updates ---
                 if objects_to_update:
                     for item_data in objects_to_update:
                         fen_to_update = item_data['fen']
                         new_moves_counter = item_data['moves_counter']
-                        db_item = await session.get(MainFen, fen_to_update)
+                        db_item = await session.get(Fen, fen_to_update)
                         existing_moves_counter = db_item.moves_counter
                         if new_moves_counter not in existing_moves_counter:
                             updated_moves_counter = existing_moves_counter + new_moves_counter
@@ -216,13 +203,13 @@ class DBInterface:
                             updated_moves_counter = existing_moves_counter                        
                         db_item.n_games += item_data['n_games']
                         db_item.moves_counter = updated_moves_counter
-                    #print(f"Updated {len(objects_to_update)} existing MainFen records.")
+                        db_item.next_moves = item_data['next_moves']
+                        db_item.score = item_data['score']
 
                 await session.commit()
                 return True
             except Exception as e:
                 await session.rollback()
-                print(f"Error during upsert_main_fens: {e}")
                 raise
 # import os
 # from typing import Any, List, Dict, TypeVar

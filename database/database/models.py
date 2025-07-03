@@ -14,9 +14,10 @@ def to_dict(obj: Base) -> dict[str, Any]:
 
 class Fen(Base):
     __tablename__ = "fen"
-    fen = Column(String, primary_key = True)
-    n_games = Column(BigInteger, nullable = False)
-    moves_counter = Column(String, nullable = False)
+    fen = Column('fen',String, primary_key = True, index = True, unique = True)
+    n_games = Column('n_games',BigInteger, nullable = False)
+    moves_counter = Column('moves_counter',String, nullable = False)
+    next_moves = Column('next_moves',String, nullable = True)
     score = Column('score', Float, nullable = True)
     
 class FromGame(Base):
