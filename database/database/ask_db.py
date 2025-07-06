@@ -10,7 +10,7 @@ from constants import CONN_STRING
 
 from sqlalchemy import text, select
 from database.database.engine import AsyncDBSession
-from database.database.models import Fen, FromGame
+from database.database.models import Fen
 
 async def open_async_request(sql_question: str,
                              params: dict = None,

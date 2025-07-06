@@ -1,5 +1,5 @@
 # OPERATIONS_MODELS
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 class FenCreateData(BaseModel):
@@ -8,5 +8,8 @@ class FenCreateData(BaseModel):
     moves_counter: str
     next_moves: Optional[str] = None
     score: Optional[float] = None
-class FromGameCreateData(BaseModel):
-    link: int
+
+class FenGameAssociateData(BaseModel):
+    fen: str  # The FEN string to associate
+    links: List[int]
+    

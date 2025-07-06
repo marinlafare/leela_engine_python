@@ -4,9 +4,10 @@ from sqlalchemy import select, insert, Integer, func # Import func
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.database.engine import AsyncDBSession
-from database.database.models import Base, Fen, FromGame, to_dict
+from database.database.models import Base, Fen, to_dict
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from datetime import datetime, timezone
+from database.operations.models import FenGameAssociateData
 
 
 _ModelType = TypeVar("_ModelType", bound=Base)
@@ -211,6 +212,65 @@ class DBInterface:
             except Exception as e:
                 await session.rollback()
                 raise
+    async def associate_fen_with_games(self, data: FenGameAssociateData) -> bool:
+        """
+        Associates a given FEN with a list of games.
+        This method will:
+        1. Retrieve the Fen object based on data.fen.
+        2. Retrieve the Game objects based on data.game_links.
+        3. Establish the many-to-many relationship by appending the Fen object
+           to the 'fens' collection of each Game object.
+        4. Commit the changes to the database.
+
+        Args:
+            data: A FenGameAssociateData Pydantic model containing the FEN string
+                  and a list of game links to associate with.
+
+        Returns:
+            True if the association was successful, False otherwise.
+        """
+        async with AsyncDBSession() as session:
+            try:
+                # 1. Retrieve the Fen object
+                fen_result = await session.execute(select(Fen).filter_by(fen=data.fen))
+                fen_obj = fen_result.scalars().first()
+
+                if not fen_obj:
+                    print(f"Error: FEN '{data.fen}' not found. Cannot perform association.")
+                    return False
+
+                # 2. Retrieve the Game objects
+                game_results = await session.execute(select(Game).filter(Game.link.in_(data.game_links)))
+                game_objs = game_results.scalars().all()
+
+                if not game_objs:
+                    print(f"No games found for links: {data.game_links}. No association made.")
+                    return False
+
+                # 3. Establish the association
+                associated_count = 0
+                for game in game_objs:
+                    # Check if the association already exists to prevent duplicates
+                    # This relies on the 'fens' relationship being loaded or lazy-loaded
+                    if fen_obj not in game.fens:
+                        game.fens.append(fen_obj)
+                        associated_count += 1
+                        print(f"Associated FEN '{fen_obj.fen}' with Game Link: {game.link}")
+                    else:
+                        print(f"FEN '{fen_obj.fen}' already associated with Game Link: {game.link}. Skipping.")
+
+                if associated_count > 0:
+                    await session.commit()
+                    print(f"Successfully committed {associated_count} new associations for FEN '{fen_obj.fen}'.")
+                    return True
+                else:
+                    print(f"No new associations were made for FEN '{fen_obj.fen}'.")
+                    return False
+
+            except Exception as e:
+                await session.rollback()
+                print(f"An error occurred during FEN-Game association: {e}")
+                raise # Re-raise the exception after rollback for higher-level handling
 # import os
 # from typing import Any, List, Dict, TypeVar
 # from sqlalchemy import select, insert, Integer # Import Integer

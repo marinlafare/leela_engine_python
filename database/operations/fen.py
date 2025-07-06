@@ -16,7 +16,7 @@ from typing import List, Dict, Any
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 from database.operations.models import FenCreateData
 from database.database.db_interface import DBInterface
-from database.database.models import Fen, FromGame
+from database.database.models import Fen
 from database.database.ask_db import open_async_request, get_game_links_by_username
 # from database.operations.collect_data import (generate_fens_for_single_game_moves,
 #                                                 get_all_moves_for_links_batch,
@@ -153,8 +153,8 @@ async def merge_fen_entries(fen_data_list: List[Dict[str, Any]]) -> List[Dict[st
     return merged_results
 async def player_moves_to_analyze(player_name:str) -> str:
     moves_data_batch = defaultdict(list)
-    sql_query =  """
-                SELECT
+    
+    sql_query = """SELECT
                     m.link,
                     m.n_move,
                     m.white_move,
@@ -163,12 +163,12 @@ async def player_moves_to_analyze(player_name:str) -> str:
                     moves AS m
                 INNER JOIN
                     game AS g ON m.link = g.link
-                LEFT JOIN
-                    from_game AS pg ON g.link = pg.link
                 WHERE
-                    pg.link IS NULL
-                    AND (g.white = :username OR g.black = :username);
-                """
+                    g.fens_done = FALSE
+                    AND (g.white = :username OR g.black = :username);"""
+    
+    
+    
     result = await open_async_request(sql_query,
                                       params={"username": player_name},
                                       fetch_as_dict = True)
@@ -184,52 +184,162 @@ async def get_batches(data_list: list, batches_size: int) -> list[list]:
     for i in range(0, len(data_list), batches_size):
         batches.append(data_list[i:i + batches_size])
     return batches
+def process_single_game_sync(link: int, one_game_moves: list) -> list[dict]:
+    """
+    Synchronous helper function to be run in a separate thread.
+    Processes moves for a single game and returns its FEN data.
+    """
+    fens_to_insert = []
+    board = chess.Board()
 
-def process_single_game_sync(link:int, one_game_moves: list) -> tuple[str, list[dict], list[dict]]:
-        """
-        Synchronous helper function to be run in a separate thread.
-        Processes moves for a single game and returns its data.
-        """
-        data = sorted(one_game_moves, key=lambda x: x['n_move'])
-        fens_to_insert = []
-        board = chess.Board()
+    # Sort the moves by n_move to ensure correct processing order
+    data = sorted(one_game_moves, key=lambda x: x['n_move'])
 
+    try:
         for ind, move_data in enumerate(data):
             expected_move_num = ind + 1
             current_move_num = move_data.get('n_move')
 
             if not expected_move_num == current_move_num:
-                print(f'not one at the beginning {link}')
-                #print(move_data)
-                return False
+                print(f'Warning: Move number mismatch for game link {link}. Expected {expected_move_num}, got {current_move_num}. Skipping game.')
+                return [] # Return empty list if there's a mismatch
 
             white_move_san = move_data.get('white_move')
             black_move_san = move_data.get('black_move')
 
-            #try:
-            # White's move
-            move_obj_white = board.parse_san(white_move_san)
-            board.push(move_obj_white)
-            current_fen_white = board.fen()
-            to_insert_white = simplify_fen(current_fen_white)
-            fens_to_insert.append(to_insert_white)
+            # Validate and apply white's move
+            try:
+                move_obj_white = board.parse_san(white_move_san)
+                board.push(move_obj_white)
+                current_fen_white = board.fen()
+                # Assuming simplify_fen is defined elsewhere and returns a dict
+                # Restored the second argument for simplify_fen
+                to_insert_white = simplify_fen(current_fen_white, ind)
+                fens_to_insert.append(to_insert_white)
+            except ValueError as e: # Catch specific chess move errors
+                print(f"Error parsing/applying white move '{white_move_san}' in game {link} at move {current_move_num}: {e}")
+                return [] # Return empty list on error
 
-            # Black's move
-            move_obj_black = board.parse_san(black_move_san)
-            board.push(move_obj_black)
-            current_fen_black = board.fen()
-            to_insert_black = simplify_fen(current_fen_black)
-            fens_to_insert.append(to_insert_black)
+            # Validate and apply black's move
+            try:
+                move_obj_black = board.parse_san(black_move_san)
+                board.push(move_obj_black)
+                current_fen_black = board.fen()
+                # Assuming simplify_fen is defined elsewhere and returns a dict
+                # Restored the second argument for simplify_fen
+                to_insert_black = simplify_fen(current_fen_black, ind + 0.5)
+                fens_to_insert.append(to_insert_black)
+            except ValueError as e: # Catch specific chess move errors
+                print(f"Error parsing/applying black move '{black_move_san}' in game {link} at move {current_move_num}: {e}")
+                return [] # Return empty list on error
 
-            # except Exception as e:
-            #     print('BAD MOVE')
+    except Exception as e:
+        # Catch any other unexpected errors during game processing
+        print(f"An unexpected error occurred while processing game {link}: {e}")
+        return [] # Return empty list on any exception
+
+    return fens_to_insert
+# def process_single_game_sync(link:int, one_game_moves: list) -> tuple[str, list[dict], list[dict]]:
+#         """
+#         Synchronous helper function to be run in a separate thread.
+#         Processes moves for a single game and returns its data.
+#         """
+#         data = sorted(one_game_moves, key=lambda x: x['n_move'])
+#         fens_to_insert = []
+#         board = chess.Board()
+
+#         for ind, move_data in enumerate(data):
+#             expected_move_num = ind + 1
+#             current_move_num = move_data.get('n_move')
+
+#             if not expected_move_num == current_move_num:
+#                 print(f'not one at the beginning {link}')
+#                 #print(move_data)
+#                 return False
+
+#             white_move_san = move_data.get('white_move')
+#             black_move_san = move_data.get('black_move')
+
+#             #try:
+#             # White's move
+#             move_obj_white = board.parse_san(white_move_san)
+#             board.push(move_obj_white)
+#             current_fen_white = board.fen()
+#             to_insert_white = simplify_fen(current_fen_white)
+#             fens_to_insert.append(to_insert_white)
+
+#             # Black's move
+#             move_obj_black = board.parse_san(black_move_san)
+#             board.push(move_obj_black)
+#             current_fen_black = board.fen()
+#             to_insert_black = simplify_fen(current_fen_black)
+#             fens_to_insert.append(to_insert_black)
+
+#             # except Exception as e:
+#             #     print('BAD MOVE')
                 
-            #     return False
+#             #     return False
 
-        return fens_to_insert
+#         return fens_to_insert
+# def process_single_game_sync(link: int, one_game_moves: list) -> list[dict]:
+#     """
+#     Synchronous helper function to be run in a separate thread.
+#     Processes moves for a single game and returns its FEN data.
+#     """
+#     fens_to_insert = []
+#     board = chess.Board()
+
+#     # Sort the moves by n_move to ensure correct processing order
+#     data = sorted(one_game_moves, key=lambda x: x['n_move'])
+
+#     try:
+#         for ind, move_data in enumerate(data):
+#             expected_move_num = ind + 1
+#             current_move_num = move_data.get('n_move')
+#             print('###################################')
+#             print('current_move_num: ',current_move_num)
+#             print('###################################')
+            
+#             if not expected_move_num == current_move_num:
+#                 print(f'Warning: Move number mismatch for game link {link}. Expected {expected_move_num}, got {current_move_num}. Skipping game.')
+#                 return [] # Return empty list if there's a mismatch
+
+#             white_move_san = move_data.get('white_move')
+#             black_move_san = move_data.get('black_move')
+
+#             # Validate and apply white's move
+#             try:
+#                 move_obj_white = board.parse_san(white_move_san)
+#                 board.push(move_obj_white)
+#                 current_fen_white = board.fen()
+#                 # Assuming simplify_fen is defined elsewhere and returns a dict
+#                 to_insert_white = simplify_fen(current_fen_white, ind)
+#                 fens_to_insert.append(to_insert_white)
+#             except ValueError as e: # Catch specific chess move errors
+#                 print(f"Error parsing/applying white move '{white_move_san}' in game {link} at move {current_move_num}: {e}")
+#                 return [] # Return empty list on error
+
+#             # Validate and apply black's move
+#             try:
+#                 move_obj_black = board.parse_san(black_move_san)
+#                 board.push(move_obj_black)
+#                 current_fen_black = board.fen()
+#                 # Assuming simplify_fen is defined elsewhere and returns a dict
+#                 to_insert_black = simplify_fen(current_fen_black, ind + 0.5)
+#                 fens_to_insert.append(to_insert_black)
+#             except ValueError as e: # Catch specific chess move errors
+#                 print(f"Error parsing/applying black move '{black_move_san}' in game {link} at move {current_move_num}: {e}")
+#                 return [] # Return empty list on error
+
+#     except Exception as e:
+#         # Catch any other unexpected errors during game processing
+#         print(f"An unexpected error occurred while processing game {link}: {e}")
+#         return [] # Return empty list on any exception
+
+#     return fens_to_insert
 
 
-def simplify_fen(raw_fen: str) -> FenCreateData:
+def simplify_fen(raw_fen: str, n_move: float) -> FenCreateData:
     """
     Simplifies a FEN string by removing move counters and fullmove number,
     and prepares data for MainFen insertion.
@@ -246,9 +356,59 @@ def simplify_fen(raw_fen: str) -> FenCreateData:
     return {'fen':simplified_fen,
             'n_games':1,
             'moves_counter':f"#{parts[4]}#{parts[5]}_",
+            'n_move' : n_move,
             'next_moves' : None,
             'score' : None}
-    
+# async def create_fens_from_games_dict(moves: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+#     """
+#     Asynchronously creates FEN dictionaries from a dictionary of game moves
+#     by parallelizing the processing of individual games using a ProcessPoolExecutor.
+
+#     Args:
+#         moves (Dict[str, List[Dict[str, Any]]]): A dictionary where keys are game links
+#                                                  and values are lists of move dictionaries.
+
+#     Returns:
+#         List[Dict[str, Any]]: A flattened list of all FEN dictionaries generated from all games.
+#     """
+#     print('Starting create_fens_from_games_dict (using ProcessPoolExecutor)')
+#     result_fens = []
+#     loop = asyncio.get_running_loop()
+
+#     # Determine the number of processes to use.
+#     # It's good practice to cap this to avoid overwhelming the system,
+#     # even if os.cpu_count() returns a very high number.
+#     # num_processes = os.cpu_count() or 1
+#     # if num_processes > 8: # Arbitrary cap, adjust based on your system and workload
+#     #     num_processes = 8
+#     num_processes = 12
+
+#     # Using ProcessPoolExecutor for CPU-bound tasks
+#     with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
+#         tasks = []
+#         for link, one_game_moves in moves.items():
+#             # Submit each game's processing as a separate task to the process pool
+#             tasks.append(
+#                 # run_in_executor is used to bridge async code with synchronous blocking calls
+#                 loop.run_in_executor(executor,
+#                                      process_single_game_sync,
+#                                      link, one_game_moves)
+#             )
+        
+#         # Await all tasks concurrently
+#         results = await asyncio.gather(*tasks, return_exceptions=True)
+
+#         # Process the results from each worker process
+#         for result in results:
+#             if isinstance(result, Exception):
+#                 continue
+#             elif isinstance(result, list): # Expecting a list of FEN dicts
+#                 result_fens.extend(result)
+#             else:
+#                 print(f"Unexpected result type from worker: {type(result)} - {result}")
+
+#     print('End of create_fens_from_games_dict')
+#     return result_fens   
 async def create_fens_from_games_dict(moves: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """
     Asynchronously creates FEN dictionaries from a dictionary of game moves
@@ -272,7 +432,7 @@ async def create_fens_from_games_dict(moves: Dict[str, List[Dict[str, Any]]]) ->
     # if num_processes > 8: # Arbitrary cap, adjust based on your system and workload
     #     num_processes = 8
     num_processes = 12
-
+    print('LEN MOVES:::::', len(moves))
     # Using ProcessPoolExecutor for CPU-bound tasks
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
         tasks = []
@@ -298,6 +458,7 @@ async def create_fens_from_games_dict(moves: Dict[str, List[Dict[str, Any]]]) ->
                 print(f"Unexpected result type from worker: {type(result)} - {result}")
 
     print('End of create_fens_from_games_dict')
+    print('FENS LEN:::::: ', len(result_fens))
     return result_fens
 
 # async def create_fens_from_games_dict(moves:dict[dict]):
@@ -331,31 +492,33 @@ async def create_fens_from_games_dict(moves: Dict[str, List[Dict[str, Any]]]) ->
         
 async def insert_fens_from_player(player_name, game_batches = 1000):
     fen_interface = DBInterface(Fen)
-    link_interface = DBInterface(FromGame)
+    #link_interface = DBInterface(FromGame)
     
     start_getting_moves = time.time()
     moves = await player_moves_to_analyze(player_name)
     end_getting_moves = time.time()
+    print('MOVES LEN: ',len(moves))
     print('getting_moves in: ',end_getting_moves - start_getting_moves)
     start_create_fens = time.time()
     fens = await create_fens_from_games_dict(moves)
     end_create_fens = time.time()
     print('created_fens in: ', end_create_fens - start_create_fens)
-    start_merge_fens = time.time()
-    fens = await merge_fen_entries(fens)
-    end_merge_fens = time.time()
-    print('merged_fens in: ', end_merge_fens - start_merge_fens)
-    start_insert_fens = time.time()
-    await fen_interface.create_all(fens)    
-    #await fen_interface.upsert_main_fens(fens,[])    
-    end_insert_fens = time.time()
-    print('inserted_fens in ', end_insert_fens - start_insert_fens)
-    start_links_inserts = time.time()
-    await link_interface.create_all([{'link':x} for x in moves.keys()])
-    end_links_inserts = time.time()
-    print('inserted_links in: ',end_links_inserts-start_links_inserts)
+    # start_merge_fens = time.time()
+    # fens = await merge_fen_entries(fens)
+    # end_merge_fens = time.time()
+    # print('merged_fens in: ', end_merge_fens - start_merge_fens)
+    # start_insert_fens = time.time()
+    # await fen_interface.create_all(fens)    
+    # #await fen_interface.upsert_main_fens(fens,[])    
+    # end_insert_fens = time.time()
+    # print('inserted_fens in ', end_insert_fens - start_insert_fens)
+    # start_links_inserts = time.time()
+    # await link_interface.create_all([{'link':x} for x in moves.keys()])
+    # end_links_inserts = time.time()
+    # print('inserted_links in: ',end_links_inserts-start_links_inserts)
     
-    return 'DONEEEEEEEEEEEEEEEEEEEEE'
+    # return 'DONEEEEEEEEEEEEEEEEEEEEE'
+    return fens
 
     # async def analyze_single_position(engine: chess.engine.UciProtocol, fen: str, n_nodes_limit: int = 50_000, time_limit: float = 3.0) -> FenCreateData:
 #     """

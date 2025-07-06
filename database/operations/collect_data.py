@@ -16,9 +16,9 @@ from database.database.engine import AsyncDBSession
 import math
 from constants import LC0_PATH, lc0_directory, LC0_WEIGHTS_FILE
 from database.database.db_interface import DBInterface
-from database.database.models import Fen, FromGame
+from database.database.models import Fen
 from database.database.ask_db import open_async_request
-from database.operations.models import FenCreateData, FromGameCreateData
+from database.operations.models import FenCreateData
 
 max_workers = 1
 
