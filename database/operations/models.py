@@ -10,6 +10,6 @@ class FenCreateData(BaseModel):
     score: Optional[float] = None
 
 class FenGameAssociateData(BaseModel):
-    fen: str  # The FEN string to associate
-    links: List[int]
+    fen_fen: str  # The FEN string to associate
+    game_link: int
     

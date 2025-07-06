@@ -8,9 +8,10 @@ from typing import List, Dict, Any
 from constants import CONN_STRING
 
 
-from sqlalchemy import text, select
+
+from sqlalchemy import text, select, update
 from database.database.engine import AsyncDBSession
-from database.database.models import Fen
+from database.database.models import Fen, Game
 
 async def open_async_request(sql_question: str,
                              params: dict = None,
@@ -66,7 +67,7 @@ async def delete_all_leela_tables():
     Note: DDL operations like DROP TABLE automatically commit.
     """
     async with AsyncDBSession() as session:
-        for table_name_to_delete in ['fen','main_fen','processed_game','game_fen']:
+        for table_name_to_delete in ['fen','game_fen_association']:
             print(f"Deleting table: {table_name_to_delete}...")
             try:
                 # Use text() for DDL commands
@@ -176,3 +177,128 @@ async def get_game_links_by_username(username: str, limit: int = 100) -> List[in
     result_tuples = await open_async_request(sql_query, params={"username": username, "limit": limit})
     # Extract just the link (which is the first and only element in each tuple)
     return [link[0] for link in result_tuples]
+async def get_fens_by_game_link(game_link: int) -> List[Dict[str, Any]]:
+    """
+    Retrieves all FENs associated with a specific game link.
+
+    Args:
+        game_link (int): The link (primary key) of the game to retrieve FENs for.
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries, where each dictionary
+                              contains the 'fen' string associated with the game.
+    """
+    sql_query = """
+        SELECT
+            f.fen
+        FROM
+            game AS g
+        INNER JOIN
+            game_fen_association AS gfa ON g.link = gfa.game_link
+        INNER JOIN
+            fen AS f ON gfa.fen_fen = f.fen
+        WHERE
+            g.link = :game_link_param;
+    """
+    result = await open_async_request(
+        sql_query,
+        params={"game_link_param": game_link},
+        fetch_as_dict=True
+    )
+    return result
+async def get_games_by_fen(fen_string: str) -> List[Dict[str, Any]]:
+    """
+    Retrieves all games associated with a specific FEN string.
+
+    Args:
+        fen_string (str): The FEN string to retrieve associated games for.
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries, where each dictionary
+                              represents a game associated with the provided FEN,
+                              containing only the 'link'.
+    """
+    sql_query = """
+        SELECT
+            g.link
+        FROM
+            fen AS f
+        INNER JOIN
+            game_fen_association AS gfa ON f.fen = gfa.fen_fen
+        INNER JOIN
+            game AS g ON gfa.game_link = g.link
+        WHERE
+            f.fen = :fen_param;
+    """
+    result = await open_async_request(
+        sql_query,
+        params={"fen_param": fen_string},
+        fetch_as_dict=True
+    )
+    return result
+
+async def get_players_with_names() -> List[Dict[str, Any]]:
+    """
+    Retrieves all player records where the 'name' column is not NULL,
+    returning only their player_name.
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries, where each dictionary
+                              represents a player with a non-NULL name,
+                              containing only the 'player_name'.
+    """
+    sql_query = """
+        SELECT
+            player_name
+        FROM
+            player
+        WHERE
+            name IS NOT NULL;
+    """
+    result = await open_async_request(
+        sql_query,
+        fetch_as_dict=True
+    )
+    return result
+async def reset_player_game_fens_done_to_false(player_name: str) -> int:
+    """
+    Resets the 'fens_done' column to False for all Game records associated with a specific player.
+    This applies to games where the player is either white or black.
+    Intended for development and testing phases to easily reset game processing status for a player.
+
+    Args:
+        player_name (str): The player_name (username) for whom to reset 'fens_done' status.
+
+    Returns:
+        int: The number of rows that were updated.
+    """
+    if not player_name:
+        print("Player name cannot be empty. No games will be reset.")
+        return 0
+
+    async with AsyncDBSession() as session:
+        try:
+            # Construct the UPDATE statement to set fens_done to False
+            # for games where the given player is either white or black.
+            stmt = (
+                update(Game)
+                .where(
+                    (Game.white == player_name) | (Game.black == player_name)
+                )
+                .values(fens_done=False)
+            )
+
+            # Execute the update statement
+            result = await session.execute(stmt)
+
+            # Commit the transaction
+            await session.commit()
+
+            # Return the number of rows affected by the update
+            print(f"Successfully reset 'fens_done' to False for {result.rowcount} game(s) involving player '{player_name}'.")
+            return result.rowcount
+
+        except Exception as e:
+            await session.rollback()
+            print(f"An error occurred while resetting 'fens_done' status for player '{player_name}': {e}")
+            raise # Re-raise the exception after rollback to propagate the error

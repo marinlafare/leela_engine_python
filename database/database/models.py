@@ -53,6 +53,11 @@ class Game(Base):
     
     white_player = relationship(Player, foreign_keys=[white])
     black_player = relationship(Player, foreign_keys=[black])
+    fens = relationship( # <--- This is the 'fens' relationship on the Game model
+        'Fen',
+        secondary='game_fen_association',
+        back_populates='games' # <--- This links back to the 'games' relationship on the Fen model
+    )
 class Month(Base):
     __tablename__ = "months"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -99,6 +104,18 @@ game_fen_association = Table(
     Column('game_link', BigInteger, ForeignKey('game.link'), primary_key=True),
     Column('fen_fen', String, ForeignKey('fen.fen'), primary_key=True)
 )
+
+
+
+
+
+
+
+
+
+
+
+
 # #DATABASE_MODELS
 
 # from typing import Any
