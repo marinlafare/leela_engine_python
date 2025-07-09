@@ -1,8 +1,0 @@
-
-
-============= Log started. =============
-0707 10:46:51.118043 7060 c:\projects\lc0\src\main.cc:44] Lc0 started.
-0707 10:46:51.118118 7060 c:\projects\lc0\src\main.cc:45] [1m[31m       _
-0707 10:46:51.118398 7060 c:\projects\lc0\src\main.cc:46] |   _ | |
-0707 10:46:51.118693 7060 c:\projects\lc0\src\main.cc:47] |_ |_ |_|[0m v0.31.2 built Oct 20 2024
-0707 10:46:51.121909 7060 c:\projects\lc0\src\utils\commandline.cc:56] Command line: \\wsl.localhost\Ubuntu-24.04\home\jon\workshop\leela_zero\leela_engine_python\Lc0\lc0.exe --logfile=lc0_gpu_log.txt

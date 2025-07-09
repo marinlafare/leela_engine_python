@@ -527,7 +527,6 @@ async def insert_fens_from_player(player_name, game_batches = 1000):
     end_insert_fens = time.time()
     print('ready fens_insertion in: ', end_insert_fens - start_insert_fens)
     start_validate_and_insert_associations = time.time()
-    #validate_to_insert_associations = [FenGameAssociateData(**x) for x in to_insert_associations]
     await DBInterface(Fen).associate_fen_with_games(to_insert_associations)
     end_validation_and_associations_insert = time.time()
     print('ready association_fen/game.link done in: ',end_validation_and_associations_insert-start_validate_and_insert_associations)
