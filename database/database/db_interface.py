@@ -1,6 +1,6 @@
 import os
 from typing import Any, List, Dict, TypeVar
-from sqlalchemy import select, insert, Integer, func, update # Import func
+from sqlalchemy import select, insert, Integer, func, update,bindparam # Import func
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.database.engine import AsyncDBSession
@@ -340,7 +340,80 @@ class DBInterface:
                 await session.rollback()
                 print(f"An error occurred during bulk update of game 'fens_done': {e}")
                 raise # Re-raise the exception after rollback for higher-level handling
+                
+    async def update_fen_analysis_data(self, analysis_data: ListOfDataObjects) -> int:
+        """
+        Updates 'score' and 'next_moves' for existing Fen records based on provided analysis data.
+        This method assumes that the FENs in analysis_data already exist in the database.
 
+        Args:
+            analysis_data: A list of dictionaries, where each dictionary contains
+                           'fen', 'score', and 'next_moves'.
+
+        Returns:
+            The number of rows updated.
+        """
+        if not analysis_data:
+            print("No analysis data provided for update.")
+            return 0
+
+        async with AsyncDBSession() as session:
+            try:
+                # Prepare data for bulk update.
+                # The keys in the dictionaries passed to execute must match the bindparam names.
+                # We need to explicitly define bindparams for both the WHERE clause and the VALUES clause.
+                # The primary key 'fen' will be used in the WHERE clause.
+                # 'score' and 'next_moves' will be used in the VALUES clause.
+                
+                # The 'prepared_data' list will contain dictionaries where keys match the bindparam names.
+                prepared_data = []
+                for item in analysis_data:
+                    prepared_data.append({
+                        'p_fen': item['fen'], # Parameter for the WHERE clause
+                        'p_score': item['score'], # Parameter for the VALUES clause
+                        'p_next_moves': item['next_moves'] # Parameter for the VALUES clause
+                    })
+
+                # Construct the UPDATE statement using bindparams for both WHERE and VALUES.
+                # This ensures SQLAlchemy generates a single, multi-valued UPDATE statement
+                # that should correctly return the rowcount.
+                stmt = (
+                    update(self.db_class)
+                    .where(self.db_class.fen == bindparam('p_fen')) # Match by FEN (primary key)
+                    .values(
+                        score=bindparam('p_score'),
+                        next_moves=bindparam('p_next_moves')
+                    )
+                )
+                
+                # Execute the statement with the list of parameters.
+                # The 'rowcount' attribute might not be directly available on the result
+                # if the underlying driver/DBAPI doesn't provide it for multi-valued DML.
+                # We will sum the rowcounts from individual executions if needed.
+                total_updated_rows = 0
+                for data_row in prepared_data:
+                    result = await session.execute(
+                        stmt,
+                        data_row, # Pass a single dictionary for each execution
+                        execution_options={"synchronize_session": False}
+                    )
+                    # Check if rowcount is available and add it
+                    if hasattr(result, 'rowcount'):
+                        total_updated_rows += result.rowcount
+                    else:
+                        # Fallback if rowcount is not directly available, assume 1 row updated if no error
+                        # This is a heuristic and might not be perfectly accurate for all cases.
+                        # A more robust solution might involve fetching the rows after update to verify.
+                        total_updated_rows += 1 # Assume one row was affected per successful execution
+
+                await session.commit()
+                print(f"Successfully updated {total_updated_rows} FEN records with analysis data.")
+                return total_updated_rows
+            except Exception as e:
+                await session.rollback()
+                print(f"An error occurred during bulk update of FEN analysis data: {e}")
+                raise # Re-raise the exception after rollback
+                
 async def reset_all_game_fens_done_to_false() -> int:
     """
     Resets the 'fens_done' column to False for all Game records where it is currently True.
