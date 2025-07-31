@@ -104,3 +104,15 @@ game_fen_association = Table(
     Column('game_link', BigInteger, ForeignKey('game.link'), primary_key=True),
     Column('fen_fen', String, ForeignKey('fen.fen'), primary_key=True)
 )
+class AnalysisTimes(Base):
+    __tablename__ = "analysis_times"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_index = Column('batch_index',Integer, nullable=False, unique=False)
+    n_batches = Column('n_batches',Integer, nullable=False, unique=False)
+    card = Column('card', Integer,nullable=False, unique=False)
+    model = Column('model',String,nullable=False, unique=False)
+    n_fens = Column('n_fens',Integer, nullable=False, unique=False)
+    time_elapsed=Column('time_elapsed', Float,nullable=False, unique=False)
+    fens_per_second = Column('fens_per_second', Float, nullable=False,unique=False)
+    analyse_time_limit = Column('analyse_time_limit', Float, nullable=False,unique=False)
+    nodes_limit = Column('nodes_limit', Integer, nullable=False, unique=False)

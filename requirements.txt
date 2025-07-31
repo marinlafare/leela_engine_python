@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy[asyncio]
+aiofiles
+python-dotenv
+asyncpg
+psutil
+requests
+chess

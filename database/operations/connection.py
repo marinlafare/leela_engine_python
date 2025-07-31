@@ -1,4 +1,4 @@
-# OPERATIONS_CONNECTION
+# databse.operations.connection.py
 import json
 import numpy as np
 from fastapi import FastAPI, WebSocket, Request, WebSocketDisconnect

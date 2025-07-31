@@ -1,0 +1,30 @@
+services:
+  leela-chessism-1:
+    build: .
+    ports:
+      - "555:555"
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - USER=jon
+      - PASSWORD=3214
+      - HOST=host.docker.internal
+      - PORT=5432
+      - DATABASE_NAME=chessism
+      - CONN_STRING=postgresql://{user}:{password}@{host}:{port}/{database_name}
+      - LC0_PATH=/app/main_project/lc0-latest-source/build/release/lc0
+      - LC0_DIRECTORY=/app/main_project/lc0-latest-source/build/release/
+      - BACKEND_DEFAULT=cuda-fp16
+      - BACKEND_ALTERNATIVE=cuda
+      - GPU_DEFAULT=0
+      - GPU_ALTERNATIVE=1
+    volumes:
+      - .:/app/main_project
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all  # or specify a specific GPU: count: 1, capabilities: [gpu]
+              capabilities: [gpu]
+    working_dir: /app/main_project
